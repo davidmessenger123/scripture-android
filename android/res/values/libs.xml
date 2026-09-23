@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<resources>
+    <!-- androiddeployqt populates the Qt libraries to bundle on first build. -->
+    <array name="bundled_libs">
+    </array>
+</resources>
