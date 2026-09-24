@@ -21,7 +21,10 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 18
+        anchors.leftMargin: parent.SafeArea.margins.left + 18
+        anchors.rightMargin: parent.SafeArea.margins.right + 18
+        anchors.topMargin: parent.SafeArea.margins.top + 12
+        anchors.bottomMargin: parent.SafeArea.margins.bottom + 12
         spacing: 12
 
         Text {

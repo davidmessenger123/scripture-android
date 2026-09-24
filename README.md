@@ -93,6 +93,25 @@ Prerequisites (one-time):
 > be resolved at package time — that is expected and harmless (the singletons
 > are registered in `main.cpp` before the engine loads).
 
+> **HTTPS needs OpenSSL.** The Android Qt kit ships no OpenSSL, so HTTPS
+> fetches fail at runtime unless you cross-build it and drop it into the
+> package source dir (`android/libs/arm64-v8a/`, gitignored — see below).
+> Minimal build (NDK on PATH, `CROSS_COMPILE=aarch64-linux-android-`):
+
+> ```sh
+> curl -fsSLo openssl-3.0.16.tar.gz https://www.openssl.org/source/openssl-3.0.16.tar.gz
+> tar xzf openssl-3.0.16.tar.gz && cd openssl-3.0.16
+> ./Configure android-arm64 -D__ANDROID_API__=28 no-asm no-tests shared
+> make -j"$(nproc)" build_libs
+> cp -L libcrypto.so android-ssl-libs/libcrypto.so
+> cp -L libcrypto.so android-ssl-libs/libcrypto_3.so
+> cp -L libssl.so    android-ssl-libs/libssl_3.so
+> ```
+>
+> Name the copies exactly `libcrypto.so`, `libcrypto_3.so`, `libssl_3.so`:
+> the first satisfies `libssl_3.so`'s `DT_NEEDED`, the other two are the
+> names Qt's TLS plugin `dlopen`s.
+
 ## Launcher icon
 
 Rendered from the exact desktop art (`make_icon.py`'s navy `#0d1b2a` rounded

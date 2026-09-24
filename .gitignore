@@ -1,3 +1,7 @@
 build*/
 .cache/
 *.user
+android/libs/
+# Signed APK artifacts built locally in the repo dir
+Scripture.apk
+Scripture.apk.idsig

@@ -14,7 +14,7 @@ Window {
     objectName: "overlayWindow"
     visible: App.overlayOpen || App.settingsOpen
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-    color: "transparent"
+    color: "#000000"
 
     onVisibleChanged: if (visible) {
         // Fill the screen geometry manually. A frameless always-on-top window
@@ -30,6 +30,33 @@ Window {
         requestActivate()
         Qt.callLater(function () { keyCatcher.forceActiveFocus() })
     }
+
+    // After the phone locks / screen turns off and you wake it, Qt can resume
+    // with the scene left blank (the Android surface is recreated). Re-assert
+    // the full-screen geometry and force a repaint whenever we come back.
+    Connections {
+        target: Qt.application
+        function onStateChanged() {
+            if (Qt.application.state === Qt.ApplicationActive) {
+                const scr = overlay.screen
+                if (scr) {
+                    overlay.x = scr.virtualX
+                    overlay.y = scr.virtualY
+                    overlay.width = scr.width
+                    overlay.height = scr.height
+                }
+                overlay.requestUpdate()
+                overlay.contentItem.update()
+                requestActivate()
+            }
+        }
+    }
+
+    // Verbose check of the platform-reported safe area (status bar + camera
+    // cutout at the top, navigation bar at the bottom) — surfaces in logcat so
+    // we can confirm the insets track the system navigation mode setting.
+    onSafeAreaMarginsChanged: console.warn("[SCRIPTURE] safe T/B/L/R " + overlay.SafeArea.margins.top + "/" + overlay.SafeArea.margins.bottom + "/" + overlay.SafeArea.margins.left + "/" + overlay.SafeArea.margins.right)
+    Component.onCompleted: Qt.callLater(function () { console.warn("[SCRIPTURE] safe T/B/L/R " + overlay.SafeArea.margins.top + "/" + overlay.SafeArea.margins.bottom + "/" + overlay.SafeArea.margins.left + "/" + overlay.SafeArea.margins.right) })
 
     // ------------------------------------------------------------------ UI fragments
 
@@ -141,43 +168,46 @@ Window {
                 onClicked: App.close_overlay()
             }
 
-            // Decorative Latin crosses, fixed to the screen edges.
+            // Decorative Latin cross, centered behind the verse text.
             CrossMark {
-                anchors.left: parent.left
-                anchors.leftMargin: 64
-                anchors.verticalCenter: parent.verticalCenter
-                opacity: App.loading ? 0.45 : 1
-                Behavior on opacity { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-            }
-
-            CrossMark {
-                anchors.right: parent.right
-                anchors.rightMargin: 64
-                anchors.verticalCenter: parent.verticalCenter
-                cr: Qt.rgba(1, 1, 1, 0.55)
-                opacity: App.loading ? 0.45 : 1
-                Behavior on opacity { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-            }
-
-            // Content cluster, auto-scaled to fit the screen.
-            Item {
-                id: cluster
                 anchors.centerIn: parent
-                width: content.width
-                height: content.height
-                scale: Math.min(
-                    1,
-                    (parent.width - 32) / Math.max(1, content.implicitWidth),
-                    (parent.height - 32) / Math.max(1, content.implicitHeight))
-                transformOrigin: Item.Center
+                cellW: 24
+                cellH: 48
+                cr: Qt.rgba(1, 1, 1, 0.12)
+                opacity: App.loading ? 0.45 : 1
+                Behavior on opacity { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+            }
 
-                // Swallows clicks on blank cluster area so only the bare scrim dismisses.
-                MouseArea { anchors.fill: parent }
+            // Content cluster: fills the screen width; scrolls vertically when a
+            // passage is taller than the screen (no more shrink-to-fit scaling).
+            Flickable {
+                id: clusterFlick
+                anchors.fill: parent
+                anchors.topMargin: parent.SafeArea.margins.top + 4
+                anchors.bottomMargin: parent.SafeArea.margins.bottom + 4
+                anchors.leftMargin: parent.SafeArea.margins.left + 16
+                anchors.rightMargin: parent.SafeArea.margins.right + 16
+                clip: true
+                contentWidth: width
+                contentHeight: Math.max(holder.height, height)
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 4
+                    rightPadding: 2
+                }
 
-                ColumnLayout {
-                    id: content
-                    width: implicitWidth
-                    spacing: 18
+                Item {
+                    id: holder
+                    width: clusterFlick.width
+                    height: Math.max(cluster.implicitHeight, clusterFlick.height)
+
+                    ColumnLayout {
+                        id: cluster
+                        width: holder.width
+                        anchors.horizontalCenter: holder.horizontalCenter
+                        y: Math.max(0, (holder.height - cluster.height) / 2)
+                        spacing: 18
 
                     // A — translation name
                     Text {
@@ -194,8 +224,7 @@ Window {
 
                     // B — verse text with typewriter reveal (rich text)
                     Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.maximumWidth: Math.min(overlay.width - 96, 760)
+                        Layout.fillWidth: true
                         text: App.displayText
                         textFormat: Text.RichText
                         color: "white"
@@ -211,7 +240,7 @@ Window {
 
                     // C — verse reference (the only accent on the overlay)
                     Text {
-                        Layout.alignment: Qt.AlignHCenter
+                        Layout.fillWidth: true
                         visible: App.verseReference !== ""
                         text: App.verseReference
                         color: "#faa968"
@@ -224,23 +253,26 @@ Window {
 
                     // D — toolbar
                     RowLayout {
-                        Layout.alignment: Qt.AlignHCenter
-                        spacing: 8
+                        id: toolbar
+                        Layout.fillWidth: true
+                        spacing: 6
 
                         OverlayButton {
-                            text: "◀"
+                        text: "◀"
                             tip: "Previous verse in this session"
+                            padX: 10
                             enabled: App.histCanBack
                             onClicked: App.back()
                         }
                         OverlayButton {
-                            text: "▶"
+                        text: "▶"
                             tip: "Next verse in this session"
+                            padX: 10
                             enabled: App.histCanForward
                             onClicked: App.forward()
                         }
                         OverlayButton {
-                            text: App.fixedReference !== "" ? "Repeat" : "Another Verse"
+                        text: App.fixedReference !== "" ? "Repeat" : "Another Verse"
                             tip: App.fixedReference !== "" ? "Show the fixed verse again" : "Get a different random verse"
                             padX: 14
                             fg: "white"
@@ -250,15 +282,17 @@ Window {
                             Behavior on opacity { NumberAnimation { duration: 240 } }
                         }
                         OverlayButton {
-                            text: App.starSymbol
+                        text: App.starSymbol
                             tip: App.isFavorite ? "Remove from favorites" : "Save to favorites"
+                            padX: 10
                             fg: App.isFavorite ? "#f5c542" : Qt.rgba(1, 1, 1, 0.55)
                             enabled: App.anchor !== "" && !App.loading
                             onClicked: App.toggle_favorite()
                         }
                         OverlayButton {
-                            text: App.translationId === "esv" ? "Open on esv.org" : "Open in browser"
+                        text: App.translationId === "esv" ? "Open on esv.org" : "Open in browser"
                             tip: "Read the passage online"
+                            padX: 10
                             fg: Qt.rgba(1, 1, 1, 0.55)
                             enabled: App.verseReference !== ""
                             onClicked: App.open_in_browser(App.verseReference)
@@ -267,7 +301,7 @@ Window {
 
                     // E — update chip (stub singleton on Android: never visible)
                     RowLayout {
-                        Layout.alignment: Qt.AlignHCenter
+                        Layout.fillWidth: true
                         spacing: 8
                         visible: Updater.updateAvailable || Updater.downloading || Updater.updateApplied
                                     || Updater.updateError !== ""
@@ -316,8 +350,7 @@ Window {
 
                     // F — favorites chips (at most 8 + overflow note)
                     RowLayout {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.maximumWidth: overlay.width - 96
+                        Layout.fillWidth: true
                         visible: App.favoritesOverflow + (App.favoritesChips.length > 0 ? 1 : 0) > 0
                         spacing: 6
 
@@ -344,7 +377,7 @@ Window {
 
                     // F — jump to any reference
                     RowLayout {
-                        Layout.alignment: Qt.AlignHCenter
+                        Layout.fillWidth: true
                         spacing: 8
 
                         Text {
@@ -407,8 +440,7 @@ Window {
 
                     // G — fetch notice / H — error
                     Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.maximumWidth: 440
+                        Layout.fillWidth: true
                         visible: App.fetchNotice !== ""
                         text: App.fetchNotice
                         color: Qt.rgba(1, 1, 1, 0.55)
@@ -419,8 +451,7 @@ Window {
                     }
 
                     Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.maximumWidth: 440
+                        Layout.fillWidth: true
                         visible: App.errorText !== ""
                         text: App.errorText
                         color: "#ff6b6b"
@@ -428,6 +459,7 @@ Window {
                         font.pixelSize: 11
                         wrapMode: Text.Wrap
                         horizontalAlignment: Text.AlignHCenter
+                    }
                     }
                 }
             }
@@ -437,8 +469,8 @@ Window {
             OverlayButton {
                 anchors.top: parent.top
                 anchors.right: parent.right
-                anchors.topMargin: 24
-                anchors.rightMargin: 24
+                anchors.topMargin: parent.SafeArea.margins.top + 8
+                anchors.rightMargin: parent.SafeArea.margins.right + 8
                 text: "\u2715  Close"
                 tip: "Close the overlay (Esc/Back)"
                 padX: 16
