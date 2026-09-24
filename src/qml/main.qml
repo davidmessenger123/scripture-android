@@ -38,6 +38,8 @@ Window {
         target: Qt.application
         function onStateChanged() {
             if (Qt.application.state === Qt.ApplicationActive) {
+                if (Qt.platform.os === "android" && !overlay.visible)
+                    App.overlayOpen = true
                 const scr = overlay.screen
                 if (scr) {
                     overlay.x = scr.virtualX
@@ -222,6 +224,18 @@ Window {
                         horizontalAlignment: Text.AlignHCenter
                     }
 
+                    Text {
+                        Layout.fillWidth: true
+                        visible: App.translationAttribution !== ""
+                        textFormat: Text.PlainText
+                        text: App.translationAttribution
+                        color: Qt.rgba(1, 1, 1, 0.45)
+                        font.family: "Segoe UI"
+                        font.pixelSize: 9
+                        wrapMode: Text.Wrap
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+
                     // B — verse text with typewriter reveal (rich text)
                     Text {
                         Layout.fillWidth: true
@@ -391,8 +405,8 @@ Window {
                         }
 
                         Rectangle {
-                            width: 240
-                            height: 34
+                            Layout.preferredWidth: 240
+                            Layout.preferredHeight: 34
                             radius: 6
                             color: Qt.rgba(1, 1, 1, 0.12)
                             border.color: Qt.rgba(1, 1, 1, 0.35)
@@ -407,6 +421,7 @@ Window {
                                 font.family: "Segoe UI"
                                 font.pixelSize: 11
                                 selectByMouse: true
+                                maximumLength: 120
                                 onAccepted: {
                                     App.load_reference(text)
                                     text = ""
@@ -487,7 +502,8 @@ Window {
             id: settingsLayer
             anchors.fill: parent
             visible: App.settingsOpen
-            onVisibleChanged: if (visible) settingsPanel.seedSettings()
+             onVisibleChanged: if (visible) Qt.callLater(function() { settingsPanel.seedSettings() })
+
 
             ScriptureSettings {
                 id: settingsPanel

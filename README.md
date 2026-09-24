@@ -9,9 +9,17 @@ backend that exposes the exact same `ScriptureRT` QML singletons (`App`,
 The app shows a full-screen verse overlay, fetches from the ESV API (key in
 Settings, shown in a password field — never bundled) or keyless bible-api.com
 (WEB/KJV), reveals the verse with a typewriter effect, keeps history, 8-chip
-favorites, and a curricular no-repeat verse deck. Decoded faithfully from the
-Windows app: 25 s fetch timeout, single plain-anchor retry per fetch, at-most
-once-per-day auto-open.
+favorites, and a curated no-repeat verse deck. Decoded faithfully from the
+Windows app: 25 s fetch timeout, one plain-anchor retry only for an explicit
+provider range-unsupported response, and at-most-once-per-day auto-open.
+
+## Versioning
+
+`VERSION` is the only Android version input. It must contain `MAJOR.MINOR.PATCH`
+with each component in the range 0–999 and at least one component nonzero. CMake
+derives the monotonic `versionCode` as `major * 1000000 + minor * 1000 + patch`
+and passes the same string as `versionName`; do not edit the manifest placeholders or CMake
+properties independently.
 
 ## Project layout
 
@@ -22,6 +30,7 @@ src/
   fetcher.cpp/.h      QNAM fetchers for api.esv.org / bible-api.com
   favorites.cpp/.h    atomic favorites.json store (QSaveFile)
   references.cpp/.h   verse deck, range/focal parsing, rich text, URLs
+  secrets.cpp/.h      Android Keystore/file-backed API key storage
   updater.cpp/.h      stub `Updater` singleton (no self-update on Android)
   qml/main.qml        verse overlay + embedded settings layers
   qml/ScriptureSettings.qml   settings form (was a separate desktop window)
@@ -29,6 +38,8 @@ android/
   AndroidManifest.xml INTERNET permission, Qt6 activity template, launcher icon
   res/                 launcher icons (legacy mipmaps + adaptive foreground)
   res/values/libs.xml  androiddeployqt fills the Qt lib list at build time
+  res/xml/             backup exclusions for the device-keystore setting
+  src/                 Android Keystore bridge for the ESV key
 tools/
   make_android_icons.cpp  regenerates the Android launcher icons from the
                           same gold-cross-on-navy art as the Windows/macOS
@@ -50,18 +61,19 @@ overlay and settings panel, then quits.
 
 Prerequisites (one-time):
 
-1. **Qt 6.x for Android** — either the Qt online installer's `Android` kit or
-   via `aqtinstall`:
+1. **Qt 6.9.0 through 6.11.x for Android** — CMake rejects other Qt 6 ranges;
+   use the Qt online installer's `Android` kit or `aqtinstall`:
 
    ```sh
-   pip install aqtinstall
-   aqt install-qt linux desktop 6.8.0 linux_gcc_64        # host tools
-   aqt install-qt linux android 6.8.0 android_arm64_v8a   # cross kit
+    python -m pip install -r requirements-android.txt
+
+   aqt install-qt linux desktop 6.9.0 linux_gcc_64        # host tools
+   aqt install-qt linux android 6.9.0 android_arm64_v8a   # cross kit
    ```
 
 2. **JDK 17+**, **Android SDK** (platform-tools, build-tools, `platforms`),
-   **Android NDK** (the version the chosen Qt release pins, e.g. r28 for
-   Qt 6.11), and `gradle` in PATH. Set:
+   **Android NDK 27.2.12479018** (Clang 17.0.2), `patchelf`, `llvm-readelf`
+   or `readelf`, `strings`, and `gradle` in PATH. Set:
    `export ANDROID_SDK_ROOT=...  export ANDROID_NDK_ROOT=...`
 
 3. Configure with Qt's Android toolchain:
@@ -93,24 +105,43 @@ Prerequisites (one-time):
 > be resolved at package time — that is expected and harmless (the singletons
 > are registered in `main.cpp` before the engine loads).
 
-> **HTTPS needs OpenSSL.** The Android Qt kit ships no OpenSSL, so HTTPS
-> fetches fail at runtime unless you cross-build it and drop it into the
-> package source dir (`android/libs/arm64-v8a/`, gitignored — see below).
-> Minimal build (NDK on PATH, `CROSS_COMPILE=aarch64-linux-android-`):
-
+> **HTTPS needs OpenSSL.** The Android Qt kit does not bundle OpenSSL.
+> Build each packaged ABI with the pinned source, NDK, API level, and flags:
+>
 > ```sh
-> curl -fsSLo openssl-3.0.16.tar.gz https://www.openssl.org/source/openssl-3.0.16.tar.gz
-> tar xzf openssl-3.0.16.tar.gz && cd openssl-3.0.16
-> ./Configure android-arm64 -D__ANDROID_API__=28 no-asm no-tests shared
-> make -j"$(nproc)" build_libs
-> cp -L libcrypto.so android-ssl-libs/libcrypto.so
-> cp -L libcrypto.so android-ssl-libs/libcrypto_3.so
-> cp -L libssl.so    android-ssl-libs/libssl_3.so
+> ANDROID_NDK_ROOT=/path/to/ndk/27.2.12479018 \
+>   tools/build_android_openssl.sh arm64-v8a
 > ```
 >
-> Name the copies exactly `libcrypto.so`, `libcrypto_3.so`, `libssl_3.so`:
-> the first satisfies `libssl_3.so`'s `DT_NEEDED`, the other two are the
-> names Qt's TLS plugin `dlopen`s.
+> The helper verifies the source archive, rejects a different NDK, fixes the
+> library names/dependencies, and checks ABI, ELF machine, and the embedded
+> OpenSSL version. `CMakeLists.txt` repeats those library checks. Equivalent
+> manual commands are:
+>
+> ```sh
+> OPENSSL_VERSION=3.0.22
+> OPENSSL_SHA256=67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+> repo_root="$(pwd)"
+> curl --fail --location --output "openssl-$OPENSSL_VERSION.tar.gz" \
+>   "https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"
+> printf '%s  %s\n' "$OPENSSL_SHA256" "openssl-$OPENSSL_VERSION.tar.gz" | sha256sum -c -
+> tar xzf "openssl-$OPENSSL_VERSION.tar.gz"
+> cd "openssl-$OPENSSL_VERSION"
+> ./Configure shared android-arm64 -D__ANDROID_API__=28 no-asm no-tests
+> make -j"$(nproc)" SHLIB_VERSION_NUMBER= build_libs
+> mkdir -p "$repo_root/android/libs/arm64-v8a"
+> cp libcrypto.so "$repo_root/android/libs/arm64-v8a/libcrypto_3.so"
+> cp libssl.so "$repo_root/android/libs/arm64-v8a/libssl_3.so"
+> patchelf --set-soname libcrypto_3.so "$repo_root/android/libs/arm64-v8a/libcrypto_3.so"
+> patchelf --set-soname libssl_3.so "$repo_root/android/libs/arm64-v8a/libssl_3.so"
+> patchelf --replace-needed libcrypto.so libcrypto_3.so "$repo_root/android/libs/arm64-v8a/libssl_3.so"
+> ```
+>
+> `CMakeLists.txt` passes the `_3` library names to Qt and
+> `main.cpp` sets `ANDROID_OPENSSL_SUFFIX=_3` before Qt Network is used. Build
+> every ABI from the same OpenSSL 3.0.22 source with NDK 27.2.12479018 and API
+> level 28; do not copy host libraries or mix source/toolchain outputs.
+
 
 ## Launcher icon
 
@@ -138,7 +169,12 @@ launcher mask), a white monochrome layer (Android 13+ themed icons), and the
   window; the desktop hosted it as a second QQuickView window).
 - `Esc` is the Android **Back** key; the Close button and a bare-scrim tap
   also dismiss the overlay.
-- The ESV API key is entered in Settings at runtime, same as desktop.
+- The ESV API key is entered in Settings at runtime and stored with the
+  Android Keystore; the manifest disables backup and cleartext traffic. A
+  desktop build uses an app-private file with owner-only permissions, while
+  Windows uses DPAPI.
+- ESV responses retain the provider's copyright/attribution text and display
+  it with the verse. The key is never written to logs or release metadata.
 
 ## Notes
 

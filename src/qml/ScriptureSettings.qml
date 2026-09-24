@@ -13,19 +13,31 @@ Item {
     id: settingsRoot
     implicitWidth: 440
     implicitHeight: 560
+    focus: visible
+    Keys.onEscapePressed: App.settingsOpen = false
+    Keys.onBackPressed: App.settingsOpen = false
 
     Rectangle {
         anchors.fill: parent
         color: "#111418"
     }
 
-    ColumnLayout {
+    Flickable {
+        id: settingsFlick
         anchors.fill: parent
         anchors.leftMargin: parent.SafeArea.margins.left + 18
         anchors.rightMargin: parent.SafeArea.margins.right + 18
         anchors.topMargin: parent.SafeArea.margins.top + 12
         anchors.bottomMargin: parent.SafeArea.margins.bottom + 12
-        spacing: 12
+        contentWidth: width
+        contentHeight: settingsColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
+        ColumnLayout {
+            id: settingsColumn
+            width: settingsFlick.width
+            spacing: 12
 
         Text {
             text: "ESV API KEY"
@@ -38,6 +50,7 @@ Item {
 
         Text {
             text: "A free api.esv.org key enables the English Standard Version. " +
+                  "The key is stored in the device keystore and is excluded from backup. " +
                   "Without one the ESV falls back to the World English Bible."
             color: "#9aa0a6"
             font.family: "Segoe UI"
@@ -51,12 +64,13 @@ Item {
             Layout.fillWidth: true
             placeholderText: "Paste your ESV API key (optional)"
             echoMode: TextInput.Password
+            maximumLength: 512
         }
 
         Rectangle {
             Layout.fillWidth: true
             Layout.topMargin: 4
-            height: 1
+            Layout.preferredHeight: 1
             color: "#2a2f35"
         }
 
@@ -100,6 +114,7 @@ Item {
                 id: fixedField
                 Layout.preferredWidth: 150
                 placeholderText: "e.g. John 3:16"
+                maximumLength: 120
             }
         }
 
@@ -141,7 +156,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.topMargin: 4
-            height: 1
+            Layout.preferredHeight: 1
             color: "#2a2f35"
         }
 
@@ -221,12 +236,11 @@ Item {
             }
         }
 
-        Item { Layout.fillHeight: true }
-
         Button {
             text: "Close"
             Layout.fillWidth: true
             onClicked: App.settingsOpen = false
+        }
         }
     }
 

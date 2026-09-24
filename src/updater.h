@@ -4,10 +4,6 @@
 #include <QObject>
 #include <QString>
 
-// The desktop app's self-update flow (download + swap the running .exe) has no
-// Android equivalent — Google Play / APK sideloading owns updates there. This
-// singleton exists so main.qml can keep its `Updater` references; it always
-// reports "no update", and `open()`/`download()` simply open the release page.
 class UpdateChecker : public QObject
 {
     Q_OBJECT
@@ -30,8 +26,8 @@ public:
 
 public slots:
     void check() {}
-    void open();
-    void download() { open(); }
+    void open() {}
+    void download() {}
     void apply() {}
 
 signals:
@@ -42,4 +38,4 @@ signals:
     void quitRequested();
 };
 
-#endif // SCRIPTURE_UPDATER_H
+#endif

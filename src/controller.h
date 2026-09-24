@@ -4,6 +4,7 @@
 #include "favorites.h"
 #include "fetcher.h"
 #include "references.h"
+#include "secrets.h"
 
 #include <QObject>
 #include <QSettings>
@@ -31,7 +32,8 @@ class AppController : public QObject
     Q_PROPERTY(QString translationId READ translationId NOTIFY verseChanged)
     Q_PROPERTY(QString translationLabel READ translationLabel NOTIFY verseChanged)
     Q_PROPERTY(QString translationName READ translationName NOTIFY verseChanged)
-    Q_PROPERTY(QString displayText READ displayText NOTIFY verseChanged)
+    Q_PROPERTY(QString translationAttribution READ translationAttribution NOTIFY verseChanged)
+    Q_PROPERTY(QString displayText READ displayText NOTIFY displayTextChanged)
     Q_PROPERTY(QString fetchNotice READ fetchNotice NOTIFY verseChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY verseChanged)
     Q_PROPERTY(QString anchor READ anchor NOTIFY verseChanged)
@@ -67,6 +69,7 @@ public:
     QString translationId() const { return m_translationId; }
     QString translationLabel() const { return m_translationId.isEmpty() ? QString() : m_translationName.toUpper(); }
     QString translationName() const;
+    QString translationAttribution() const { return m_translationAttribution; }
     QString displayText() const;
     QString fetchNotice() const { return m_fetchNotice; }
     QString errorText() const { return m_errorText; }
@@ -79,7 +82,7 @@ public:
     QVariantList favorites() const { return m_favoritesList; }
     QVariantList favoritesChips() const { return m_favoritesList.mid(0, ChipCap); }
     int favoritesOverflow() const { return qMax(0, m_favoritesList.size() - ChipCap); }
-    QString settingsApiKey() const { return m_settings.value(QStringLiteral("apiKey")).toString(); }
+    QString settingsApiKey() const { return m_apiKey; }
     QString settingsTranslation() const { return (setting(QStringLiteral("translation")).isEmpty() ? QStringLiteral("ESV") : setting(QStringLiteral("translation"))).toUpper(); }
     QString settingsFixedReference() const { return setting(QStringLiteral("fixedReference")); }
     QString settingsAutoOpenAt() const { return setting(QStringLiteral("autoOpenAt")); }
@@ -103,14 +106,15 @@ public:
 
 signals:
     void verseChanged();
+    void displayTextChanged();
     void loadingChanged();
     void favoritesChanged();
     void overlayChanged();
     void settingsChanged();
 
 private slots:
-    void onEsvResult(int tag, const QString &body, const QString &error);
-    void onWebResult(int tag, const QString &body, const QString &error);
+    void onEsvResult(int tag, const QString &body, const QString &error, int status);
+    void onWebResult(int tag, const QString &body, const QString &error, int status);
     void onFetchTimeout();
     void onRevealTick();
     void onAutoOpenTimer();
@@ -118,6 +122,7 @@ private slots:
 private:
     // -- settings helpers ------------------------------------------------
     QString setting(const QString &key, const QString &defaultValue = QString()) const;
+    void syncAutoOpenTimer();
 
     // -- fetch pipeline --------------------------------------------------
     QString providerChoice() const;
@@ -125,7 +130,9 @@ private:
     void fetch(const QString &anchor, bool recordHistory);
     void applyVerse(const QString &before, const QString &focal, const QString &after,
                     const QString &reference, const QString &translationId,
-                    const QString &translationName);
+                    const QString &translationName,
+                    const QString &attribution);
+
 
     // -- history / reveal ------------------------------------------------
     void recordHistory(const QString &anchor);
@@ -138,12 +145,16 @@ private:
     static constexpr int ChipCap = 8;
 
     QSettings m_settings;
+    QSettings m_legacySettings;
+    SecureStore m_secrets;
+    QString m_apiKey;
     FavoritesStore m_store;
     QVariantList m_favoritesList;
     Fetcher m_fetcher;
 
     // verse state
     bool m_overlayOpen = false;
+    bool m_skipNextOpenRefresh = false;
     bool m_loading = false;
     bool m_settingsOpen = false;
     QString m_settingsNotice;
@@ -154,6 +165,7 @@ private:
     QString m_verseReference;
     QString m_translationId;
     QString m_translationName;
+    QString m_translationAttribution;
     QString m_verseAnchor;
     QString m_pendingAnchor;
     QString m_pendingReference;
@@ -176,6 +188,7 @@ private:
     int m_histPos = -1;
 
     // auto-open
+    QTimer m_openRefreshTimer;
     QTimer m_autoOpenTimer;
     QString m_lastAutoOpenDay;
 

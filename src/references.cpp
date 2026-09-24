@@ -4,6 +4,7 @@
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QStringList>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -114,6 +115,13 @@ QList<QString> scripture()
     return deck;
 }
 
+QRegularExpression referenceRx()
+{
+    static const QRegularExpression rx(QStringLiteral(
+        "^(?:[1-3]\\s+)?[A-Za-z]+(?:\\s+[A-Za-z]+)*\\s+(\\d{1,3}):(\\d{1,3})(?:-(\\d{1,3}))?$"));
+    return rx;
+}
+
 QRegularExpression rangeRx()
 {
     static const QRegularExpression rx(QStringLiteral("^(.*?)\\s+(\\d+):(\\d+)$"));
@@ -177,9 +185,43 @@ QString Deck::draw(const QString &avoid)
     return reference;
 }
 
+QString normalizeReference(const QString &reference)
+{
+    if (reference.toUtf8().size() > MAX_REFERENCE_BYTES)
+        return QString();
+    for (const QChar character : reference) {
+        if (character.unicode() < 32 || character.unicode() == 127)
+            return QString();
+    }
+    QString text = reference;
+    text.replace(spaceRx(), QStringLiteral(" "));
+    text = text.trimmed();
+    if (text.isEmpty())
+        return QString();
+    const QRegularExpressionMatch match = referenceRx().match(text);
+    if (!match.hasMatch())
+        return QString();
+    bool chapterOk = false;
+    bool verseOk = false;
+    bool endOk = true;
+    const int chapter = match.captured(1).toInt(&chapterOk);
+    const int verse = match.captured(2).toInt(&verseOk);
+    const int endVerse = match.captured(3).isEmpty() ? verse : match.captured(3).toInt(&endOk);
+    if (!chapterOk || !verseOk || !endOk || chapter < 1 || verse < 1 || endVerse < verse)
+        return QString();
+    return text;
+}
+
+bool isValidReference(const QString &reference)
+{
+    return !normalizeReference(reference).isEmpty();
+}
+
 QString rangeQuery(const QString &reference)
 {
-    const QString ref = reference.trimmed();
+    const QString ref = normalizeReference(reference);
+    if (ref.isEmpty())
+        return QString();
     const QRegularExpressionMatch match = rangeRx().match(ref);
     if (!match.hasMatch())
         return ref;
@@ -196,7 +238,10 @@ QString rangeQuery(const QString &reference)
 
 int focalVerse(const QString &reference)
 {
-    const QRegularExpressionMatch match = focalRx().match(reference.trimmed());
+    const QString ref = normalizeReference(reference);
+    if (ref.isEmpty() || ref.contains(QLatin1Char('-')))
+        return 0;
+    const QRegularExpressionMatch match = focalRx().match(ref);
     return match.hasMatch() ? match.captured(1).toInt() : 0;
 }
 
@@ -348,8 +393,10 @@ QString composeRichText(const QString &before, const QString &focal,
 
 QString browserUrl(const QString &reference, const QString &translationId)
 {
-    QString slug = reference;
-    slug.replace(QLatin1Char(' '), QLatin1Char('+'));
+    const QString normalized = normalizeReference(reference);
+    if (normalized.isEmpty())
+        return QString();
+    const QString slug = QString::fromLatin1(QUrl::toPercentEncoding(normalized, QByteArray(), "-_.!~*'()"));
     if (translationId.compare(QStringLiteral("esv"), Qt::CaseInsensitive) == 0)
         return QStringLiteral("https://www.esv.org/%1/").arg(slug);
     const QString version = translationId.compare(QStringLiteral("kjv"), Qt::CaseInsensitive) == 0
@@ -360,7 +407,10 @@ QString browserUrl(const QString &reference, const QString &translationId)
 
 QString encodeReference(const QString &reference)
 {
-    const QByteArray in = reference.toUtf8();
+    const QString normalized = normalizeReference(reference);
+    if (normalized.isEmpty())
+        return QString();
+    const QByteArray in = normalized.toUtf8();
     auto safe = [](unsigned char c) -> bool {
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
             return true;
@@ -394,8 +444,8 @@ QString referenceText(const QJsonObject &payload)
     const int chapter = rv.value(QStringLiteral("chapter")).toInt(0);
     const int verse = rv.value(QStringLiteral("verse")).toInt(0);
     if (!book.isEmpty() && chapter > 0 && verse > 0)
-        return QStringLiteral("%1 %2:%3").arg(book).arg(chapter).arg(verse);
-    return payload.value(QStringLiteral("reference")).toString().trimmed();
+        return normalizeReference(QStringLiteral("%1 %2:%3").arg(book).arg(chapter).arg(verse));
+    return normalizeReference(payload.value(QStringLiteral("reference")).toString());
 }
 
 QString translationText(const QJsonObject &payload)

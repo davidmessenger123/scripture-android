@@ -10,6 +10,10 @@
 
 #include <QtQml/qqml.h>
 
+#ifndef SCRIPTURE_VERSION
+#define SCRIPTURE_VERSION "dev"
+#endif
+
 // Scripture for Android — the desktop Scripture app ported to Qt Quick with a
 // C++ backend, reusing the desktop app's main.qml UI. Both singletons are
 // registered into the `ScriptureRT` module so the QML import resolves.
@@ -22,9 +26,13 @@ int main(int argc, char *argv[])
     // Pin Qt Quick Controls to the "Basic" style, matching the desktop app, so
     // no platform-specific native style module is ever required.
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+#ifdef Q_OS_ANDROID
+    qputenv("ANDROID_OPENSSL_SUFFIX", "_3");
+#endif
 
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Scripture"));
+    app.setApplicationVersion(QStringLiteral(SCRIPTURE_VERSION));
     app.setOrganizationName(QStringLiteral("davidjm"));
     app.setQuitOnLastWindowClosed(false);
 
