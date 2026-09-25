@@ -32,6 +32,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
+            libegl-dev \
+            libegl1 \
             libgl-dev \
             libglx-dev \
             libopengl-dev \
@@ -70,6 +72,7 @@ jobs:
       QT_VERSION: 6.9.0
       ANDROID_NDK_VERSION: 27.2.12479018
       ANDROID_API: 36
+      ANDROID_CMDLINE_TOOLS_VERSION: 11076708
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -92,19 +95,58 @@ jobs:
             patchelf \
             ninja-build \
             unzip
-          export ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          if ! command -v sdkmanager >/dev/null; then
-            printf '%s\n' 'Android sdkmanager is unavailable on this runner' >&2
-            exit 1
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          sdkmanager_path=""
+          for candidate in \
+            "${ANDROID_SDK_ROOT:-}" \
+            "${ANDROID_HOME:-}" \
+            "$HOME/Android/Sdk" \
+            "$HOME/android-sdk" \
+            "/usr/local/lib/android/sdk" \
+            "/opt/android-sdk" \
+            "/usr/lib/android-sdk"; do
+            [[ -n "$candidate" && -d "$candidate" ]] || continue
+            for manager in \
+              "$candidate"/cmdline-tools/*/bin/sdkmanager \
+              "$candidate"/tools/bin/sdkmanager; do
+              if [[ -x "$manager" ]]; then
+                sdk_root="$candidate"
+                sdkmanager_path="$manager"
+                break 2
+              fi
+            done
+          done
+          if [[ -z "$sdkmanager_path" ]] && command -v sdkmanager >/dev/null 2>&1; then
+            sdkmanager_path="$(command -v sdkmanager)"
+            resolved_sdkmanager="$(readlink -f "$sdkmanager_path")"
+            candidate_root="$(dirname "$(dirname "$(dirname "$(dirname "$resolved_sdkmanager")")")")"
+            if [[ -d "$candidate_root/platforms" || -d "$candidate_root/cmdline-tools" || -d "$candidate_root/tools" ]]; then
+              sdk_root="$candidate_root"
+            fi
           fi
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
+          if [[ -z "$sdkmanager_path" || -z "$sdk_root" || ! -w "$sdk_root" ]]; then
+            sdk_root="$RUNNER_TEMP/android-sdk"
+            archive="$RUNNER_TEMP/android-command-line-tools.zip"
+            extract="$RUNNER_TEMP/android-command-line-tools"
+            rm -rf "$sdk_root" "$extract"
+            mkdir -p "$sdk_root/cmdline-tools" "$extract"
+            curl --fail --location --retry 3 \
+              "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+              --output "$archive"
+            unzip -q "$archive" -d "$extract"
+            mv "$extract/cmdline-tools" "$sdk_root/cmdline-tools/latest"
+            sdkmanager_path="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          chmod +x "$sdkmanager_path"
+          yes | "$sdkmanager_path" --sdk_root="$sdk_root" --licenses >/dev/null || true
+          "$sdkmanager_path" --sdk_root="$sdk_root" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;35.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
+          printf 'ANDROID_SDK_ROOT=%s\n' "$sdk_root" >> "$GITHUB_ENV"
+          printf 'ANDROID_HOME=%s\n' "$sdk_root" >> "$GITHUB_ENV"
+          printf 'ANDROID_NDK_ROOT=%s\n' "$sdk_root/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Install pinned Qt host and Android toolchains
         shell: bash
         run: |
@@ -116,17 +158,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}"
           tools/build_android_openssl.sh arm64-v8a
       - name: Configure Android build
         shell: bash
         run: |
           set -euo pipefail
-          export ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}"
           cmake -S . -B build-android -GNinja \
             -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/Qt/${QT_VERSION}/android_arm64_v8a/lib/cmake/Qt6/qt.toolchain.cmake" \
             -DQT_HOST_PATH="$RUNNER_TEMP/Qt/${QT_VERSION}/gcc_64" \
@@ -137,9 +173,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}"
           cmake --build build-android --parallel
           test -f build-android/android-build/build/outputs/apk/debug/android-build-debug.apk
           unzip -l build-android/android-build/build/outputs/apk/debug/android-build-debug.apk | grep -F 'lib/arm64-v8a/libscriptureandroid.so'
