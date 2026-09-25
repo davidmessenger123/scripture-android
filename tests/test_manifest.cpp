@@ -43,6 +43,9 @@ int main(int argc, char **argv)
     require(workflowText.contains(QStringLiteral("ANDROID_SDK_ROOT")));
     require(workflowText.contains(QStringLiteral("ANDROID_NDK_ROOT")));
     require(workflowText.contains(QStringLiteral("commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip")));
+    require(workflowText.contains(QStringLiteral("test -x \"$sdkmanager_path\"")));
+    require(workflowText.contains(QStringLiteral("Android sdkmanager is not executable")));
+    require(!workflowText.contains(QStringLiteral("chmod +x")));
     require(!workflowText.contains(QStringLiteral("export ANDROID_SDK_ROOT=\"$RUNNER_TEMP/android-sdk\"")));
     QFile icon(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/res/drawable/ic_notification.xml"));
     require(icon.open(QIODevice::ReadOnly));
