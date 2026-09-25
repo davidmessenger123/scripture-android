@@ -174,7 +174,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build-android --target scriptureandroid --parallel
+          cmake --build build-android --target scriptureandroid_make_apk --parallel
           test -f build-android/android-build/build/outputs/apk/debug/android-build-debug.apk
           unzip -l build-android/android-build/build/outputs/apk/debug/android-build-debug.apk | grep -F 'lib/arm64-v8a/libscriptureandroid.so'
           unzip -l build-android/android-build/build/outputs/apk/debug/android-build-debug.apk | grep -F 'classes.dex'
