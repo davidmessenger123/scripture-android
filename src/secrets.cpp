@@ -6,7 +6,7 @@
 #include <QSaveFile>
 
 #ifdef Q_OS_ANDROID
-#include <QAndroidJniObject>
+#include <QtCore/qjniobject.h>
 #endif
 
 namespace {
@@ -32,10 +32,10 @@ SecureStore::SecureStore(const QString &dataDir)
 QString SecureStore::load(QString *error) const
 {
 #ifdef Q_OS_ANDROID
-    const bool hasStoredValue = QAndroidJniObject::callStaticMethod<bool>(
+    const bool hasStoredValue = QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/SecureKeyStore", "hasStoredValue", "()Z");
     if (hasStoredValue) {
-        const QAndroidJniObject result = QAndroidJniObject::callStaticObjectMethod(
+        const QJniObject result = QJniObject::callStaticObjectMethod(
             "org/davidjm/scripture/SecureKeyStore", "get", "()Ljava/lang/String;");
         const QString value = result.isValid() ? result.toString() : QString();
         if (!value.isEmpty() && !validatedKey(value).isEmpty()) {
@@ -50,7 +50,7 @@ QString SecureStore::load(QString *error) const
     }
     const QString legacy = loadFile(error);
     if (!legacy.isEmpty()) {
-        const bool migrated = QAndroidJniObject::callStaticMethod<bool>(
+        const bool migrated = QJniObject::callStaticMethod<bool>(
             "org/davidjm/scripture/SecureKeyStore", "set", "(Ljava/lang/String;)Z", legacy);
         if (migrated) {
             QString removalError;
@@ -75,7 +75,7 @@ bool SecureStore::save(const QString &value, QString *error) const
         return false;
     }
 #ifdef Q_OS_ANDROID
-    const bool saved = QAndroidJniObject::callStaticMethod<bool>(
+    const bool saved = QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/SecureKeyStore", "set", "(Ljava/lang/String;)Z", key);
     if (saved)
         return true;
@@ -92,7 +92,7 @@ bool SecureStore::clear(QString *error) const
     if (!clearFile(error))
         return false;
 #ifdef Q_OS_ANDROID
-    if (!QAndroidJniObject::callStaticMethod<bool>(
+    if (!QJniObject::callStaticMethod<bool>(
             "org/davidjm/scripture/SecureKeyStore", "delete", "()Z")) {
         if (error)
             *error = QStringLiteral("Android secure storage could not remove the API key");

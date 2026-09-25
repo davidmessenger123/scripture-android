@@ -1,14 +1,15 @@
 #include "android_notifications.h"
 
 #ifdef Q_OS_ANDROID
-#include <QAndroidJniObject>
+#include <QtCore/qcoreapplication_platform.h>
+#include <QtCore/qjniobject.h>
 #endif
 
 namespace AndroidNotifications {
 bool supported()
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticMethod<bool>(
+    return QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "isSupported", "()Z");
 #else
     return false;
@@ -23,7 +24,7 @@ bool permissionGranted()
 bool permissionRequested()
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticMethod<bool>(
+    return QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "permissionRequested", "()Z");
 #else
     return false;
@@ -33,7 +34,7 @@ bool permissionRequested()
 QString permissionState()
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticObjectMethod(
+    return QJniObject::callStaticObjectMethod(
         "org/davidjm/scripture/DailyVerseScheduler", "permissionState",
         "()Ljava/lang/String;").toString();
 #else
@@ -44,7 +45,7 @@ QString permissionState()
 QString consumePermissionResult()
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticObjectMethod(
+    return QJniObject::callStaticObjectMethod(
         "org/davidjm/scripture/DailyVerseScheduler", "consumePermissionResult",
         "()Ljava/lang/String;").toString();
 #else
@@ -55,10 +56,10 @@ QString consumePermissionResult()
 QString requestPermission()
 {
 #ifdef Q_OS_ANDROID
-    const QAndroidJniObject activity = QAndroidJniObject::currentActivity();
+    const QJniObject activity = QNativeInterface::QAndroidApplication::context();
     if (!activity.isValid())
         return QStringLiteral("unavailable");
-    return QAndroidJniObject::callStaticObjectMethod(
+    return QJniObject::callStaticObjectMethod(
         "org/davidjm/scripture/DailyVerseScheduler", "requestPermission",
         "(Landroid/app/Activity;)Ljava/lang/String;", activity.object()).toString();
 #else
@@ -69,7 +70,7 @@ QString requestPermission()
 bool schedule(const QString &time)
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticMethod<bool>(
+    return QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "schedule", "(Ljava/lang/String;)Z", time);
 #else
     Q_UNUSED(time)
@@ -80,7 +81,7 @@ bool schedule(const QString &time)
 bool openNotificationSettings(const QString &state)
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticMethod<bool>(
+    return QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "openNotificationSettings",
         "(Ljava/lang/String;)Z", state);
 #else
@@ -92,7 +93,7 @@ bool openNotificationSettings(const QString &state)
 bool cancel()
 {
 #ifdef Q_OS_ANDROID
-    return QAndroidJniObject::callStaticMethod<bool>(
+    return QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "cancel", "()Z");
 #else
     return false;
@@ -102,7 +103,7 @@ bool cancel()
 void updateSnapshot(const QString &reference, const QString &text)
 {
 #ifdef Q_OS_ANDROID
-    QAndroidJniObject::callStaticMethod<bool>(
+    QJniObject::callStaticMethod<bool>(
         "org/davidjm/scripture/DailyVerseScheduler", "updateSnapshot",
         "(Ljava/lang/String;Ljava/lang/String;)Z", reference, text.left(32768));
 #endif
