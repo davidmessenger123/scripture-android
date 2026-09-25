@@ -9,27 +9,43 @@ OPENSSL_SHA256=67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
 OPENSSL_API=28
 NDK_VERSION=27.2.12479018
 ABI=${1:-}
+CHECK_NDK_VERSION_ONLY=0
+if [[ "$ABI" == --check-ndk-version ]]; then
+  CHECK_NDK_VERSION_ONLY=1
+  ABI=""
+fi
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEST="$ROOT/android/libs/$ABI"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-case "$ABI" in
-  arm64-v8a) TARGET=android-arm64; MACHINE=AArch64 ;;
-  armeabi-v7a) TARGET=android-arm; MACHINE=ARM ;;
-  x86_64) TARGET=android-x86_64; MACHINE=X86-64 ;;
-  x86) TARGET=android-x86; MACHINE="Intel 80386" ;;
-  *) printf 'usage: %s {arm64-v8a|armeabi-v7a|x86_64|x86}\n' "$0" >&2; exit 2 ;;
-esac
+if [[ $CHECK_NDK_VERSION_ONLY -eq 0 ]]; then
+  case "$ABI" in
+    arm64-v8a) TARGET=android-arm64; MACHINE=AArch64 ;;
+    armeabi-v7a) TARGET=android-arm; MACHINE=ARM ;;
+    x86_64) TARGET=android-x86_64; MACHINE=X86-64 ;;
+    x86) TARGET=android-x86; MACHINE="Intel 80386" ;;
+    *) printf 'usage: %s {arm64-v8a|armeabi-v7a|x86_64|x86}\n' "$0" >&2; exit 2 ;;
+  esac
+fi
 
 : "${ANDROID_NDK_ROOT:?ANDROID_NDK_ROOT is required}"
 if [[ ! -f "$ANDROID_NDK_ROOT/source.properties" ]]; then
   printf 'NDK source.properties is missing\n' >&2
   exit 1
 fi
+trim_ascii_whitespace()
+{
+  local value=$1
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
 ACTUAL_NDK=$(while IFS='=' read -r key value; do
+  key=$(trim_ascii_whitespace "$key")
+  value=$(trim_ascii_whitespace "$value")
   if [[ $key == "Pkg.Revision" ]]; then
-    value=${value// /}
     printf '%s' "$value"
     break
   fi
@@ -37,6 +53,9 @@ done < "$ANDROID_NDK_ROOT/source.properties")
 if [[ $ACTUAL_NDK != "$NDK_VERSION" ]]; then
   printf 'NDK %s is required; found %s\n' "$NDK_VERSION" "$ACTUAL_NDK" >&2
   exit 1
+fi
+if [[ $CHECK_NDK_VERSION_ONLY -eq 1 ]]; then
+  exit 0
 fi
 for tool in curl sha256sum tar make patchelf readelf strings nproc; do
   command -v "$tool" >/dev/null || { printf '%s is required\n' "$tool" >&2; exit 1; }

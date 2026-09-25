@@ -1,6 +1,10 @@
 #include <QCoreApplication>
 #include <QFile>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 
 #include <cstdlib>
 
@@ -10,11 +14,39 @@ void require(bool condition)
     if (!condition)
         std::abort();
 }
+
+bool ndkVersionCheck(const QString &properties)
+{
+    QTemporaryDir directory;
+    if (!directory.isValid())
+        return false;
+    QFile source(directory.filePath(QStringLiteral("source.properties")));
+    if (!source.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    source.write(properties.toUtf8());
+    source.close();
+    QProcess process;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("ANDROID_NDK_ROOT"), directory.path());
+    process.setProcessEnvironment(environment);
+    process.start(QStringLiteral("bash"), QStringList{
+        QStringLiteral(SCRIPTURE_SOURCE_DIR "/tools/build_android_openssl.sh"),
+        QStringLiteral("--check-ndk-version")});
+    if (!process.waitForFinished(5000)) {
+        process.kill();
+        process.waitForFinished();
+        return false;
+    }
+    return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
 }
 
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+    require(ndkVersionCheck(QStringLiteral(" Pkg.Revision \t= \t27.2.12479018 \r\n")));
+    require(ndkVersionCheck(QStringLiteral("Pkg.Revision=27.2.12479018\n")));
+    require(!ndkVersionCheck(QStringLiteral("Pkg.Revision = 27.2.12479017\n")));
     QFile manifest(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/AndroidManifest.xml"));
     require(manifest.open(QIODevice::ReadOnly));
     const QString text = QString::fromUtf8(manifest.readAll());
