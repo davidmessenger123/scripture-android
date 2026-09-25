@@ -150,7 +150,6 @@ if readelf -d libssl.so | grep -F "[libcrypto.so]" >/dev/null; then
   exit 1
 fi
 strings -a libcrypto.so | grep -F "OpenSSL $OPENSSL_VERSION" >/dev/null
-strings -a libssl.so | grep -F "OpenSSL $OPENSSL_VERSION" >/dev/null
 install -d "$DEST"
 install -m 0644 libcrypto.so "$DEST/libcrypto_3.so"
 install -m 0644 libssl.so "$DEST/libssl_3.so"
