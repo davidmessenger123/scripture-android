@@ -13,6 +13,28 @@ favorites, and a curated no-repeat verse deck. Decoded faithfully from the
 Windows app: 25 s fetch timeout, one plain-anchor retry only for an explicit
 provider range-unsupported response, and at-most-once-per-day auto-open.
 
+Successful passages are cached in app-private storage after strict provider
+validation. The cache is atomic and bounded to 256 entries/1 MiB, uses an exact
+versioned schema with a non-secret ESV key fingerprint, compacts entries older
+than 30 days, and is consulted only after a transport, timeout, or transient
+server failure. Auth/schema failures
+never fall back, and removing an ESV key makes its cached entries inaccessible.
+It never contains the API key or raw provider payload, and an explicit offline
+notice is shown for a valid fallback. Plain verse text can be copied or
+shared, and a 1080×1350 deterministic PNG card can be saved in app-private
+storage or shared through an Android `ACTION_SEND` chooser backed by a narrow,
+read-only content provider. Daily notifications use an Android alarm, request runtime permission
+when required, and persist a one-per-day dedupe record; the notification uses
+the last validated verse snapshot and opens the app when tapped. Unsupported
+platforms and denied permission disable the feature without affecting verse
+reading.
+
+Book and topic selectors filter random draws using only the same curated 185
+references. Fixed verses, favorites, history navigation, and jump-to-reference
+remain direct paths. Display settings persist safe clamps for verse font size
+(16–56 px), scrim opacity (0–100%), and reveal speed (0–100); reveal speed `0`
+and scrim opacity `0` are explicit off settings.
+
 ## Versioning
 
 `VERSION` is the only Android version input. It must contain `MAJOR.MINOR.PATCH`
@@ -29,17 +51,24 @@ src/
   controller.cpp/.h   AppController (the `App` QML singleton)
   fetcher.cpp/.h      QNAM fetchers for api.esv.org / bible-api.com
   favorites.cpp/.h    atomic favorites.json store (QSaveFile)
-  references.cpp/.h   verse deck, range/focal parsing, rich text, URLs
+  passage_cache.cpp/.h validated, bounded, atomic offline passage cache
+  references.cpp/.h   verse deck, filters, range/focal parsing, rich text, URLs
+  verse_card.cpp/.h   deterministic plain-text/PNG card rendering and storage
+  android_notifications.cpp/.h  Android alarm/permission bridge
+  android_share.cpp/.h          Android ACTION_SEND bridge
   secrets.cpp/.h      Android Keystore/file-backed API key storage
   updater.cpp/.h      stub `Updater` singleton (no self-update on Android)
   qml/main.qml        verse overlay + embedded settings layers
   qml/ScriptureSettings.qml   settings form (was a separate desktop window)
 android/
-  AndroidManifest.xml INTERNET permission, Qt6 activity template, launcher icon
+  AndroidManifest.xml network/notification permissions, Qt6 activity, launcher icon
   res/                 launcher icons (legacy mipmaps + adaptive foreground)
   res/values/libs.xml  androiddeployqt fills the Qt lib list at build time
   res/xml/             backup exclusions for the device-keystore setting
-  src/                 Android Keystore bridge for the ESV key
+  src/                 Keystore, notification, alarm, and share-provider bridges
+tests/
+  test_core.cpp        native invariants, storage, cache, and card tests
+  test_qml.cpp         headless QML resource/settings test
 tools/
   make_android_icons.cpp  regenerates the Android launcher icons from the
                           same gold-cross-on-navy art as the Windows/macOS
@@ -49,8 +78,9 @@ tools/
 ## Desktop build (quick local verification)
 
 ```sh
-cmake -S . -B build -GNinja
-cmake --build build
+cmake -S . -B build -GNinja -DBUILD_TESTING=ON
+cmake --build build --parallel
+QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 QT_QPA_PLATFORM=offscreen ./build/scriptureandroid --smoke   # exits 0
 ```
 
@@ -140,10 +170,16 @@ Prerequisites (one-time):
 > `CMakeLists.txt` passes the `_3` library names to Qt and
 > `main.cpp` sets `ANDROID_OPENSSL_SUFFIX=_3` before Qt Network is used. Build
 > every ABI from the same OpenSSL 3.0.22 source with NDK 27.2.12479018 and API
-> level 28; do not copy host libraries or mix source/toolchain outputs.
+>    level 28; do not copy host libraries or mix source/toolchain outputs.
+
+The Android CI job pins Qt `6.9.0`, NDK `27.2.12479018`, and Android API
+`36`; it builds OpenSSL, runs the manifest/Java/native Android build, and checks
+the APK contents. A local machine without that exact NDK cannot complete the
+Android package build and should use the pinned CI job for Android coverage.
 
 
 ## Launcher icon
+
 
 Rendered from the exact desktop art (`make_icon.py`'s navy `#0d1b2a` rounded
 square + gold `#f5c542` Latin cross). Generated PNGs are committed under
@@ -173,8 +209,30 @@ launcher mask), a white monochrome layer (Android 13+ themed icons), and the
   Android Keystore; the manifest disables backup and cleartext traffic. A
   desktop build uses an app-private file with owner-only permissions, while
   Windows uses DPAPI.
-- ESV responses retain the provider's copyright/attribution text and display
-  it with the verse. The key is never written to logs or release metadata.
+- ESV responses retain provider copyright/attribution only in validated
+  cache/provider state. It is never rendered, copied, shared, included in a
+  card, or placed in a notification body; user-facing output contains the
+  passage, reference, and compact translation name. Legacy notification
+  snapshots are compacted before display as well. The key is never written to
+  logs, cache data, cards, notifications, or release metadata.
+- Android notification permission is requested only when the user enables a
+  daily time. Runtime denial, app-level blocking, and channel disabling are
+  reported separately with Android Settings guidance; a denied prompt is not
+  repeatedly shown. Alarms use the explicit daily action and re-arm after
+  time/timezone changes and package replacement.
+- Android 16 predictive Back is explicitly opted out in the manifest so the
+  current Qt `Keys.onBackPressed` handling remains the active Back path.
+- Card sharing uses a private, read-only `content://` provider restricted to
+  generated PNGs; it does not expose arbitrary app files.
+
+## Tests
+
+`scripture_core_tests` covers reference/filter invariants, fetcher retry rules,
+favorites, secure storage, cache validation/bounds, key generations, and
+removal of provider legal text. `scripture_manifest_tests` checks Android
+manifest/bridge contracts. `scripture_qml_tests` loads the real QML resource
+tree headlessly and opens the embedded settings panel. All three run in CI with
+the offscreen Qt platform plugin.
 
 ## Notes
 

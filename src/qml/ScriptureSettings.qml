@@ -137,10 +137,183 @@ Item {
             }
         }
 
+        RowLayout {
+            spacing: 8
+
+            Text {
+                text: "Daily verse (HH:MM)"
+                color: "#9aa0a6"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.fillWidth: true
+            }
+
+            TextField {
+                id: dailyField
+                Layout.preferredWidth: 120
+                placeholderText: "08:00"
+                maximumLength: 5
+            }
+        }
+
+        RowLayout {
+            visible: App.notificationAvailable && (dailyField.text !== "" || App.settingsDailyNotificationAt !== "")
+            spacing: 8
+
+            Text {
+                text: App.notificationPermissionState === "granted" ? "Notifications allowed" :
+                      App.notificationPermissionState === "pending" ? "Permission prompt pending" :
+                      App.notificationPermissionState === "app-blocked" ? "Notifications blocked in Android Settings" :
+                      App.notificationPermissionState === "channel-disabled" ? "Daily verse channel disabled" :
+                      App.notificationPermissionRequested ? "Notification permission denied" :
+                      "Notification permission required"
+                color: App.notificationPermissionGranted ? "#9aa0a6" : "#faa968"
+                font.family: "Segoe UI"
+                font.pixelSize: 10
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+
+            Button {
+                objectName: "notificationPermissionButton"
+                text: App.notificationPermissionGranted ? "Enabled" :
+                      App.notificationPermissionState === "pending" ? "Pending" :
+                      (App.notificationPermissionState === "app-blocked"
+                       || App.notificationPermissionState === "channel-disabled"
+                       || (App.notificationPermissionState === "runtime-denied"
+                           && App.notificationPermissionRequested)) ? "Open Settings" :
+                      App.notificationPermissionRequested ? "Denied" : "Enable"
+                enabled: App.notificationPermissionState === "app-blocked"
+                        || App.notificationPermissionState === "channel-disabled"
+                        || App.notificationPermissionState === "runtime-denied"
+                onClicked: {
+                    if (App.notificationPermissionState === "app-blocked"
+                            || App.notificationPermissionState === "channel-disabled"
+                            || (App.notificationPermissionState === "runtime-denied"
+                                && App.notificationPermissionRequested))
+                        App.open_notification_settings()
+                    else if (App.notificationPermissionState === "runtime-denied"
+                             && !App.notificationPermissionRequested)
+                        App.request_notification_permission()
+                }
+            }
+        }
+
+        Text {
+            text: "DISPLAY"
+            color: "#faa968"
+            font.family: "Segoe UI"
+            font.pixelSize: 10
+            font.bold: true
+            font.letterSpacing: 2
+        }
+
+        RowLayout {
+            spacing: 8
+
+            Text {
+                text: "Verse font size"
+                color: "#9aa0a6"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 120
+            }
+
+            Slider {
+                id: fontSlider
+                Layout.fillWidth: true
+                from: 16
+                to: 56
+                stepSize: 1
+                value: App.verseFontSize
+                onMoved: App.verseFontSize = value
+            }
+
+            Text {
+                text: Math.round(fontSlider.value)
+                color: "#e8eaed"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 28
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+
+        RowLayout {
+            spacing: 8
+
+            Text {
+                text: "Scrim opacity"
+                color: "#9aa0a6"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 120
+            }
+
+            Slider {
+                id: scrimSlider
+                Layout.fillWidth: true
+                from: 0
+                to: 100
+                stepSize: 1
+                value: App.scrimOpacity
+                onMoved: App.scrimOpacity = value
+            }
+
+            Text {
+                text: Math.round(scrimSlider.value) + "%"
+                color: "#e8eaed"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 38
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+
+        RowLayout {
+            spacing: 8
+
+            Text {
+                text: "Reveal speed"
+                color: "#9aa0a6"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 120
+            }
+
+            Slider {
+                id: revealSlider
+                Layout.fillWidth: true
+                from: 0
+                to: 100
+                stepSize: 1
+                value: App.revealSpeed
+                onMoved: App.revealSpeed = value
+            }
+
+            Text {
+                text: revealSlider.value === 0 ? "Off" : Math.round(revealSlider.value) + "%"
+                color: "#e8eaed"
+                font.family: "Segoe UI"
+                font.pixelSize: 11
+                Layout.preferredWidth: 38
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+
+        Text {
+            text: "Reveal speed 0 shows the complete verse immediately. Scrim opacity 0 removes the dark layer."
+            color: "#9aa0a6"
+            font.family: "Segoe UI"
+            font.pixelSize: 10
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+
         Button {
             text: "Apply"
             Layout.fillWidth: true
-            onClicked: App.save_settings(keyField.text, settingsRoot.selTranslation, fixedField.text, autoField.text)
+            onClicked: App.save_all_settings(keyField.text, settingsRoot.selTranslation, fixedField.text, autoField.text, dailyField.text, Math.round(fontSlider.value), Math.round(scrimSlider.value), Math.round(revealSlider.value))
         }
 
         Text {
@@ -249,6 +422,10 @@ Item {
         keyField.text = App.settingsApiKey
         fixedField.text = App.settingsFixedReference
         autoField.text = App.settingsAutoOpenAt
+        dailyField.text = App.settingsDailyNotificationAt
+        fontSlider.value = App.verseFontSize
+        scrimSlider.value = App.scrimOpacity
+        revealSlider.value = App.revealSpeed
         selTranslation = App.settingsTranslation
     }
     property string selTranslation: "ESV"

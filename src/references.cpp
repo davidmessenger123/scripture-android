@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 #include <QUrl>
 
@@ -115,6 +116,31 @@ QList<QString> scripture()
     return deck;
 }
 
+struct TopicDefinition
+{
+    QString name;
+    QStringList references;
+};
+
+QList<TopicDefinition> topics()
+{
+    static const QList<TopicDefinition> definitions = {
+        {QStringLiteral("Faith"), {QStringLiteral("Mark 9:23"), QStringLiteral("John 3:16"), QStringLiteral("Romans 10:9"), QStringLiteral("2 Timothy 1:7"), QStringLiteral("Hebrews 11:1"), QStringLiteral("Hebrews 11:6")}},
+        {QStringLiteral("Love"), {QStringLiteral("John 13:34"), QStringLiteral("John 14:6"), QStringLiteral("1 John 4:7"), QStringLiteral("1 John 4:19"), QStringLiteral("1 Corinthians 13:4")}},
+        {QStringLiteral("Hope"), {QStringLiteral("Isaiah 40:31"), QStringLiteral("Jeremiah 29:11"), QStringLiteral("Romans 15:13"), QStringLiteral("2 Peter 3:9"), QStringLiteral("1 Peter 2:9")}},
+        {QStringLiteral("Courage"), {QStringLiteral("Joshua 1:9"), QStringLiteral("Isaiah 41:10"), QStringLiteral("Acts 1:8"), QStringLiteral("2 Timothy 1:7"), QStringLiteral("Hebrews 12:2")}},
+        {QStringLiteral("Wisdom"), {QStringLiteral("Proverbs 3:5"), QStringLiteral("Proverbs 3:6"), QStringLiteral("Ecclesiastes 12:13"), QStringLiteral("James 1:5"), QStringLiteral("Proverbs 18:10")}},
+        {QStringLiteral("Grace"), {QStringLiteral("John 1:29"), QStringLiteral("Romans 5:8"), QStringLiteral("2 Corinthians 5:17"), QStringLiteral("Ephesians 2:8"), QStringLiteral("Titus 2:11")}},
+        {QStringLiteral("Thanksgiving"), {QStringLiteral("Psalm 30:5"), QStringLiteral("Psalm 118:24"), QStringLiteral("James 1:17"), QStringLiteral("1 Thessalonians 5:18"), QStringLiteral("Philippians 4:6")}},
+        {QStringLiteral("Peace"), {QStringLiteral("John 14:27"), QStringLiteral("John 16:33"), QStringLiteral("Philippians 4:6"), QStringLiteral("Romans 15:13"), QStringLiteral("Psalm 34:8")}},
+        {QStringLiteral("Perseverance"), {QStringLiteral("Galatians 6:9"), QStringLiteral("Hebrews 10:35"), QStringLiteral("Hebrews 12:1"), QStringLiteral("2 Thessalonians 3:3"), QStringLiteral("1 Corinthians 15:58")}},
+        {QStringLiteral("Provision"), {QStringLiteral("Deuteronomy 33:27"), QStringLiteral("Matthew 6:33"), QStringLiteral("Matthew 7:7"), QStringLiteral("Philippians 4:19"), QStringLiteral("Psalm 127:1")}},
+        {QStringLiteral("Forgiveness"), {QStringLiteral("1 John 1:9"), QStringLiteral("Ephesians 4:32"), QStringLiteral("Colossians 3:23"), QStringLiteral("Luke 1:37"), QStringLiteral("Romans 8:38")}},
+        {QStringLiteral("Light"), {QStringLiteral("John 8:32"), QStringLiteral("John 1:29"), QStringLiteral("Matthew 5:14"), QStringLiteral("Psalm 27:1")}}
+    };
+    return definitions;
+}
+
 QRegularExpression referenceRx()
 {
     static const QRegularExpression rx(QStringLiteral(
@@ -166,14 +192,44 @@ Deck::Deck()
 
 void Deck::shuffle()
 {
-    QList<QString> pool = scripture();
+    if (m_deck.isEmpty())
+        return;
+    QList<QString> pool = m_deck;
     std::shuffle(pool.begin(), pool.end(), *QRandomGenerator::global());
     m_deck = pool;
     m_pos = 0;
 }
 
+QStringList Deck::references() const
+{
+    return m_deck;
+}
+
+void Deck::setFilters(const QString &book, const QString &topic)
+{
+    QStringList filtered = referencesForBook(book);
+    const QString selectedTopic = topic.trimmed();
+    if (!selectedTopic.isEmpty()) {
+        const QStringList topicReferences = referencesForTopic(selectedTopic);
+        if (topicReferences.isEmpty()) {
+            filtered.clear();
+        } else {
+            QStringList intersection;
+            for (const QString &reference : filtered) {
+                if (topicReferences.contains(reference))
+                    intersection.append(reference);
+            }
+            filtered = intersection;
+        }
+    }
+    m_deck = filtered;
+    m_pos = 0;
+}
+
 QString Deck::draw(const QString &avoid)
 {
+    if (m_deck.isEmpty())
+        return QString();
     if (m_pos >= m_deck.size())
         shuffle();
     QString reference = m_deck.at(m_pos);
@@ -183,6 +239,73 @@ QString Deck::draw(const QString &avoid)
         m_pos++;
     }
     return reference;
+}
+
+QStringList allReferences()
+{
+    return scripture();
+}
+
+QStringList bookOptions()
+{
+    QStringList books;
+    QSet<QString> seen;
+    for (const QString &reference : scripture()) {
+        const QString book = bookName(reference);
+        if (!book.isEmpty() && !seen.contains(book)) {
+            seen.insert(book);
+            books.append(book);
+        }
+    }
+    return books;
+}
+
+QStringList topicOptions()
+{
+    QStringList names;
+    for (const TopicDefinition &topic : topics())
+        names.append(topic.name);
+    return names;
+}
+
+QString bookName(const QString &reference)
+{
+    const QString normalized = normalizeReference(reference);
+    if (normalized.isEmpty())
+        return QString();
+    const QRegularExpressionMatch match = rangeRx().match(normalized);
+    return match.hasMatch() ? match.captured(1) : QString();
+}
+
+QStringList referencesForBook(const QString &book)
+{
+    const QString selected = book.trimmed();
+    if (selected.isEmpty())
+        return scripture();
+    QStringList result;
+    for (const QString &reference : scripture()) {
+        if (bookName(reference) == selected)
+            result.append(reference);
+    }
+    return result;
+}
+
+QStringList referencesForTopic(const QString &topic)
+{
+    const QString selected = topic.trimmed();
+    if (selected.isEmpty())
+        return QStringList();
+    for (const TopicDefinition &definition : topics()) {
+        if (definition.name != selected)
+            continue;
+        QStringList result;
+        for (const QString &reference : definition.references) {
+            if (scripture().contains(reference))
+                result.append(reference);
+        }
+        return result;
+    }
+    return QStringList();
 }
 
 QString normalizeReference(const QString &reference)

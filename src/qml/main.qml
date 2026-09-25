@@ -14,7 +14,7 @@ Window {
     objectName: "overlayWindow"
     visible: App.overlayOpen || App.settingsOpen
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-    color: "#000000"
+    color: App.scrimOpacity > 0 ? "#000000" : "transparent"
 
     onVisibleChanged: if (visible) {
         // Fill the screen geometry manually. A frameless always-on-top window
@@ -38,6 +38,7 @@ Window {
         target: Qt.application
         function onStateChanged() {
             if (Qt.application.state === Qt.ApplicationActive) {
+                App.refresh_notification_status()
                 if (Qt.platform.os === "android" && !overlay.visible)
                     App.overlayOpen = true
                 const scr = overlay.screen
@@ -161,7 +162,8 @@ Window {
             Rectangle {
                 id: scrim
                 anchors.fill: parent
-                color: Qt.rgba(0, 0, 0, 0.78)
+                visible: App.scrimOpacity > 0
+                color: Qt.rgba(0, 0, 0, App.scrimOpacity / 100)
             }
 
             // Bare-scrim click dismisses; everything inside the cluster is swallowed.
@@ -224,18 +226,6 @@ Window {
                         horizontalAlignment: Text.AlignHCenter
                     }
 
-                    Text {
-                        Layout.fillWidth: true
-                        visible: App.translationAttribution !== ""
-                        textFormat: Text.PlainText
-                        text: App.translationAttribution
-                        color: Qt.rgba(1, 1, 1, 0.45)
-                        font.family: "Segoe UI"
-                        font.pixelSize: 9
-                        wrapMode: Text.Wrap
-                        horizontalAlignment: Text.AlignHCenter
-                    }
-
                     // B — verse text with typewriter reveal (rich text)
                     Text {
                         Layout.fillWidth: true
@@ -243,7 +233,7 @@ Window {
                         textFormat: Text.RichText
                         color: "white"
                         font.family: "Segoe UI"
-                        font.pixelSize: 28
+                        font.pixelSize: App.verseFontSize
                         font.weight: Font.Light
                         lineHeight: 1.55
                         wrapMode: Text.Wrap
@@ -304,12 +294,60 @@ Window {
                             onClicked: App.toggle_favorite()
                         }
                         OverlayButton {
-                        text: App.translationId === "esv" ? "Open on esv.org" : "Open in browser"
+                            text: App.translationId === "esv" ? "Open on esv.org" : "Open in browser"
                             tip: "Read the passage online"
                             padX: 10
                             fg: Qt.rgba(1, 1, 1, 0.55)
                             enabled: App.verseReference !== ""
                             onClicked: App.open_in_browser(App.verseReference)
+                        }
+                        OverlayButton {
+                            objectName: "settingsButton"
+                            text: "Settings"
+                            tip: "Open API key, filters, schedule, and notification settings"
+                            padX: 12
+                            fg: "white"
+                            onClicked: App.toggle_settings()
+                        }
+
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        visible: App.hasContent
+
+                        OverlayButton {
+                            text: "Copy"
+                            tip: "Copy plain verse text"
+                            padX: 12
+                            fg: Qt.rgba(1, 1, 1, 0.55)
+                            enabled: !App.loading
+                            onClicked: App.copy_verse()
+                        }
+                        OverlayButton {
+                            text: "Share"
+                            tip: "Share plain verse text"
+                            padX: 12
+                            fg: Qt.rgba(1, 1, 1, 0.55)
+                            enabled: !App.loading
+                            onClicked: App.share_verse()
+                        }
+                        OverlayButton {
+                            text: "Save Card"
+                            tip: "Save a deterministic verse card"
+                            padX: 12
+                            fg: Qt.rgba(1, 1, 1, 0.55)
+                            enabled: !App.loading
+                            onClicked: App.save_verse_card()
+                        }
+                        OverlayButton {
+                            text: "Share Card"
+                            tip: "Share a deterministic verse card"
+                            padX: 12
+                            fg: Qt.rgba(1, 1, 1, 0.55)
+                            enabled: !App.loading
+                            onClicked: App.share_verse_card()
                         }
                     }
 
@@ -386,6 +424,37 @@ Window {
                             color: Qt.rgba(1, 1, 1, 0.55)
                             font.family: "Segoe UI"
                             font.pixelSize: 10
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        Text {
+                            text: "FILTERS"
+                            color: Qt.rgba(1, 1, 1, 0.55)
+                            font.family: "Segoe UI"
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 2
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        ComboBox {
+                            id: bookFilter
+                            Layout.preferredWidth: 150
+                            model: ["All books"].concat(App.bookOptions)
+                            currentIndex: App.selectedBook === "" ? 0 : Math.max(0, App.bookOptions.indexOf(App.selectedBook) + 1)
+                            onActivated: App.selectedBook = currentIndex === 0 ? "" : App.bookOptions[currentIndex - 1]
+                        }
+
+                        ComboBox {
+                            id: topicFilter
+                            Layout.preferredWidth: 150
+                            model: ["All topics"].concat(App.topicOptions)
+                            currentIndex: App.selectedTopic === "" ? 0 : Math.max(0, App.topicOptions.indexOf(App.selectedTopic) + 1)
+                            onActivated: App.selectedTopic = currentIndex === 0 ? "" : App.topicOptions[currentIndex - 1]
                         }
                     }
 
@@ -472,6 +541,17 @@ Window {
                         color: "#ff6b6b"
                         font.family: "Segoe UI"
                         font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: App.actionNotice !== ""
+                        text: App.actionNotice
+                        color: App.actionNoticeError ? "#ff6b6b" : Qt.rgba(1, 1, 1, 0.55)
+                        font.family: "Segoe UI"
+                        font.pixelSize: 10
                         wrapMode: Text.Wrap
                         horizontalAlignment: Text.AlignHCenter
                     }

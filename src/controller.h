@@ -3,8 +3,10 @@
 
 #include "favorites.h"
 #include "fetcher.h"
+#include "passage_cache.h"
 #include "references.h"
 #include "secrets.h"
+#include "verse_card.h"
 
 #include <QObject>
 #include <QSettings>
@@ -32,7 +34,6 @@ class AppController : public QObject
     Q_PROPERTY(QString translationId READ translationId NOTIFY verseChanged)
     Q_PROPERTY(QString translationLabel READ translationLabel NOTIFY verseChanged)
     Q_PROPERTY(QString translationName READ translationName NOTIFY verseChanged)
-    Q_PROPERTY(QString translationAttribution READ translationAttribution NOTIFY verseChanged)
     Q_PROPERTY(QString displayText READ displayText NOTIFY displayTextChanged)
     Q_PROPERTY(QString fetchNotice READ fetchNotice NOTIFY verseChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY verseChanged)
@@ -49,8 +50,24 @@ class AppController : public QObject
     Q_PROPERTY(QString settingsTranslation READ settingsTranslation NOTIFY settingsChanged)
     Q_PROPERTY(QString settingsFixedReference READ settingsFixedReference NOTIFY settingsChanged)
     Q_PROPERTY(QString settingsAutoOpenAt READ settingsAutoOpenAt NOTIFY settingsChanged)
+    Q_PROPERTY(QString settingsDailyNotificationAt READ settingsDailyNotificationAt NOTIFY settingsChanged)
     Q_PROPERTY(QString settingsNotice READ settingsNotice NOTIFY settingsChanged)
     Q_PROPERTY(bool settingsNoticeError READ settingsNoticeError NOTIFY settingsChanged)
+    Q_PROPERTY(QString actionNotice READ actionNotice NOTIFY actionNoticeChanged)
+    Q_PROPERTY(bool actionNoticeError READ actionNoticeError NOTIFY actionNoticeChanged)
+    Q_PROPERTY(QString lastCardPath READ lastCardPath NOTIFY actionNoticeChanged)
+    Q_PROPERTY(QStringList bookOptions READ bookOptions CONSTANT)
+    Q_PROPERTY(QStringList topicOptions READ topicOptions CONSTANT)
+    Q_PROPERTY(QString selectedBook READ selectedBook WRITE setSelectedBook NOTIFY filtersChanged)
+    Q_PROPERTY(QString selectedTopic READ selectedTopic WRITE setSelectedTopic NOTIFY filtersChanged)
+    Q_PROPERTY(bool filtersActive READ filtersActive NOTIFY filtersChanged)
+    Q_PROPERTY(int verseFontSize READ verseFontSize WRITE setVerseFontSize NOTIFY appearanceChanged)
+    Q_PROPERTY(int scrimOpacity READ scrimOpacity WRITE setScrimOpacity NOTIFY appearanceChanged)
+    Q_PROPERTY(int revealSpeed READ revealSpeed WRITE setRevealSpeed NOTIFY appearanceChanged)
+    Q_PROPERTY(bool notificationAvailable READ notificationAvailable NOTIFY notificationChanged)
+    Q_PROPERTY(bool notificationPermissionGranted READ notificationPermissionGranted NOTIFY notificationChanged)
+    Q_PROPERTY(QString notificationPermissionState READ notificationPermissionState NOTIFY notificationChanged)
+    Q_PROPERTY(bool notificationPermissionRequested READ notificationPermissionRequested NOTIFY notificationChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -69,7 +86,6 @@ public:
     QString translationId() const { return m_translationId; }
     QString translationLabel() const { return m_translationId.isEmpty() ? QString() : m_translationName.toUpper(); }
     QString translationName() const;
-    QString translationAttribution() const { return m_translationAttribution; }
     QString displayText() const;
     QString fetchNotice() const { return m_fetchNotice; }
     QString errorText() const { return m_errorText; }
@@ -86,10 +102,30 @@ public:
     QString settingsTranslation() const { return (setting(QStringLiteral("translation")).isEmpty() ? QStringLiteral("ESV") : setting(QStringLiteral("translation"))).toUpper(); }
     QString settingsFixedReference() const { return setting(QStringLiteral("fixedReference")); }
     QString settingsAutoOpenAt() const { return setting(QStringLiteral("autoOpenAt")); }
+    QString settingsDailyNotificationAt() const { return setting(QStringLiteral("dailyNotificationAt")); }
     QString settingsNotice() const { return m_settingsNotice; }
     bool settingsNoticeError() const { return m_settingsNoticeError; }
+    QString actionNotice() const { return m_actionNotice; }
+    bool actionNoticeError() const { return m_actionNoticeError; }
+    QString lastCardPath() const { return m_lastCardPath; }
+    QStringList bookOptions() const;
+    QStringList topicOptions() const;
+    QString selectedBook() const { return m_selectedBook; }
+    void setSelectedBook(const QString &book);
+    QString selectedTopic() const { return m_selectedTopic; }
+    void setSelectedTopic(const QString &topic);
+    bool filtersActive() const { return !m_selectedBook.isEmpty() || !m_selectedTopic.isEmpty(); }
+    int verseFontSize() const { return m_verseFontSize; }
+    void setVerseFontSize(int value);
+    int scrimOpacity() const { return m_scrimOpacity; }
+    void setScrimOpacity(int value);
+    int revealSpeed() const { return m_revealSpeed; }
+    void setRevealSpeed(int value);
+    bool notificationAvailable() const;
+    bool notificationPermissionGranted() const;
+    QString notificationPermissionState() const;
+    bool notificationPermissionRequested() const;
 
-    // -- QML-invokable actions -------------------------------------------
     Q_INVOKABLE void close_overlay() { setOverlayOpen(false); }
     Q_INVOKABLE void toggle_overlay() { setOverlayOpen(!m_overlayOpen); }
     Q_INVOKABLE void toggle_settings() { setSettingsOpen(!m_settingsOpen); }
@@ -103,6 +139,17 @@ public:
     Q_INVOKABLE void check_auto_open();
     Q_INVOKABLE void save_settings(const QString &apiKey, const QString &translation,
                                    const QString &fixedReference, const QString &autoOpenAt);
+    Q_INVOKABLE void save_all_settings(const QString &apiKey, const QString &translation,
+                                       const QString &fixedReference, const QString &autoOpenAt,
+                                       const QString &dailyNotificationAt, int verseFontSize,
+                                       int scrimOpacity, int revealSpeed);
+    Q_INVOKABLE bool copy_verse();
+    Q_INVOKABLE bool share_verse();
+    Q_INVOKABLE bool save_verse_card();
+    Q_INVOKABLE bool share_verse_card();
+    Q_INVOKABLE void request_notification_permission();
+    Q_INVOKABLE bool open_notification_settings();
+    Q_INVOKABLE void refresh_notification_status();
 
 signals:
     void verseChanged();
@@ -111,6 +158,10 @@ signals:
     void favoritesChanged();
     void overlayChanged();
     void settingsChanged();
+    void actionNoticeChanged();
+    void filtersChanged();
+    void appearanceChanged();
+    void notificationChanged();
 
 private slots:
     void onEsvResult(int tag, const QString &body, const QString &error, int status);
@@ -122,17 +173,25 @@ private slots:
 private:
     // -- settings helpers ------------------------------------------------
     QString setting(const QString &key, const QString &defaultValue = QString()) const;
+    void repairPersistedSettings();
     void syncAutoOpenTimer();
+    bool syncNotificationSchedule(QString *reason = nullptr);
+    void updateNotificationSnapshot();
+    void cacheCurrentPassage(const QString &provider, const QString &before, const QString &focal,
+                              const QString &after, const QString &reference,
+                              const QString &translationId, const QString &translationName,
+                              const QString &attribution);
+    bool applyCachedPassage();
+    void setActionNotice(const QString &notice, bool error = false);
 
     // -- fetch pipeline --------------------------------------------------
     QString providerChoice() const;
     QString apiKey() const;
+    QString keyFingerprint() const;
     void fetch(const QString &anchor, bool recordHistory);
     void applyVerse(const QString &before, const QString &focal, const QString &after,
                     const QString &reference, const QString &translationId,
-                    const QString &translationName,
-                    const QString &attribution);
-
+                    const QString &translationName);
 
     // -- history / reveal ------------------------------------------------
     void recordHistory(const QString &anchor);
@@ -140,15 +199,21 @@ private:
 
     static constexpr int FetchTimeoutMs = 25000;
     static constexpr int RevealIntervalMs = 16;
-    static constexpr int RevealDurationMs = 2200;
     static constexpr int HistoryCap = 200;
     static constexpr int ChipCap = 8;
+    static constexpr int MinFontSize = 16;
+    static constexpr int MaxFontSize = 56;
+    static constexpr int DefaultFontSize = 28;
+    static constexpr int DefaultScrimOpacity = 78;
+    static constexpr int DefaultRevealSpeed = 50;
 
     QSettings m_settings;
     QSettings m_legacySettings;
+    QString m_dataDir;
     SecureStore m_secrets;
     QString m_apiKey;
     FavoritesStore m_store;
+    PassageCache m_cache;
     QVariantList m_favoritesList;
     Fetcher m_fetcher;
 
@@ -159,16 +224,26 @@ private:
     bool m_settingsOpen = false;
     QString m_settingsNotice;
     bool m_settingsNoticeError = false;
+    QString m_actionNotice;
+    bool m_actionNoticeError = false;
+    QString m_notificationPermissionState = QStringLiteral("unavailable");
+    bool m_notificationPermissionRequested = false;
+    QString m_lastCardPath;
+    QString m_selectedBook;
+    QString m_selectedTopic;
+    int m_verseFontSize = DefaultFontSize;
+    int m_scrimOpacity = DefaultScrimOpacity;
+    int m_revealSpeed = DefaultRevealSpeed;
     QString m_contextBefore;
     QString m_verseText;
     QString m_contextAfter;
     QString m_verseReference;
     QString m_translationId;
     QString m_translationName;
-    QString m_translationAttribution;
     QString m_verseAnchor;
     QString m_pendingAnchor;
     QString m_pendingReference;
+    QString m_pendingProvider;
     int m_pendingFocal = 0;
     bool m_webRetried = false;
     bool m_esvRetried = false;
@@ -190,6 +265,7 @@ private:
     // auto-open
     QTimer m_openRefreshTimer;
     QTimer m_autoOpenTimer;
+    QTimer m_notificationPermissionTimer;
     QString m_lastAutoOpenDay;
 
     // fetch timeout

@@ -9,7 +9,7 @@ import android.util.Base64;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
-import java.util.Cipher;
+import javax.crypto.Cipher;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -134,6 +134,6 @@ public final class SecureKeyStore {
         Object application = currentApplication.invoke(null);
         if (!(application instanceof Context))
             throw new IllegalStateException("application context unavailable");
-        return application.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return ((Context) application).getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 }

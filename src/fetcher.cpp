@@ -118,6 +118,14 @@ bool shouldRetryRange(const QString &provider, const QString &rangeReference,
     return false;
 }
 
+bool isTransientFetchFailure(const QString &error, int httpStatus)
+{
+    if (httpStatus == 408 || httpStatus == 425 || httpStatus == 429
+        || (httpStatus >= 500 && httpStatus <= 599))
+        return true;
+    return httpStatus == 0 && error.startsWith(QStringLiteral("network error:"), Qt::CaseInsensitive);
+}
+
 Fetcher::Fetcher(QObject *parent)
     : QObject(parent)
     , m_net(new QNetworkAccessManager(this))

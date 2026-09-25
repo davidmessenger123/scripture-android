@@ -1,0 +1,84 @@
+#include <QCoreApplication>
+#include <QFile>
+#include <QString>
+
+#include <cstdlib>
+
+namespace {
+void require(bool condition)
+{
+    if (!condition)
+        std::abort();
+}
+}
+
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+    QFile manifest(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/AndroidManifest.xml"));
+    require(manifest.open(QIODevice::ReadOnly));
+    const QString text = QString::fromUtf8(manifest.readAll());
+    require(text.contains(QStringLiteral("android:enableOnBackInvokedCallback=\"false\"")));
+    require(text.contains(QStringLiteral("android.permission.POST_NOTIFICATIONS")));
+    require(text.contains(QStringLiteral("android.permission.RECEIVE_BOOT_COMPLETED")));
+    require(text.contains(QStringLiteral("org.davidjm.scripture.VerseShareProvider")));
+    require(text.contains(QStringLiteral("org.davidjm.scripture.DailyVerseReceiver")));
+    require(text.contains(QStringLiteral("org.davidjm.scripture.MainActivity")));
+    require(text.contains(QStringLiteral("org.davidjm.scripture.DAILY_VERSE")));
+    require(text.contains(QStringLiteral("android.intent.action.TIME_SET")));
+    require(text.contains(QStringLiteral("android.intent.action.TIMEZONE_CHANGED")));
+    require(text.contains(QStringLiteral("android.intent.action.MY_PACKAGE_REPLACED")));
+    QFile icon(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/res/drawable/ic_notification.xml"));
+    require(icon.open(QIODevice::ReadOnly));
+    require(QString::fromUtf8(icon.readAll()).contains(QStringLiteral("<vector")));
+    QFile scheduler(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/src/org/davidjm/scripture/DailyVerseScheduler.java"));
+    require(scheduler.open(QIODevice::ReadOnly));
+    const QString schedulerText = QString::fromUtf8(scheduler.readAll());
+    require(schedulerText.contains(QStringLiteral("consumePermissionResult")));
+    require(schedulerText.contains(QStringLiteral("onPermissionResult")));
+    require(schedulerText.contains(QStringLiteral("PERMISSION_REQUESTED")));
+    require(schedulerText.contains(QStringLiteral("runtime-denied")));
+    require(schedulerText.contains(QStringLiteral("app-blocked")));
+    require(schedulerText.contains(QStringLiteral("channel-disabled")));
+    require(schedulerText.contains(QStringLiteral("Settings.ACTION_APP_NOTIFICATION_SETTINGS")));
+    require(schedulerText.contains(QStringLiteral("Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS")));
+    require(schedulerText.contains(QStringLiteral("Settings.EXTRA_CHANNEL_ID")));
+    require(schedulerText.contains(QStringLiteral("openNotificationSettings")));
+    require(schedulerText.contains(QStringLiteral("STATE_RUNTIME_DENIED.equals(state)")));
+    require(schedulerText.contains(QStringLiteral("if (preferences.getBoolean(PERMISSION_REQUESTED, false))")));
+    require(schedulerText.contains(QStringLiteral("activity.requestPermissions")));
+    require(schedulerText.contains(QStringLiteral("setAndAllowWhileIdle")));
+    require(schedulerText.contains(QStringLiteral("if (!scheduleNext(context))")));
+    require(schedulerText.contains(QStringLiteral("rollback")));
+    QFile main(QStringLiteral(SCRIPTURE_SOURCE_DIR "/src/qml/main.qml"));
+    require(main.open(QIODevice::ReadOnly));
+    const QString mainText = QString::fromUtf8(main.readAll());
+    require(mainText.contains(QStringLiteral("objectName: \"settingsButton\"")));
+    require(mainText.contains(QStringLiteral("App.toggle_settings()")));
+    QFile settings(QStringLiteral(SCRIPTURE_SOURCE_DIR "/src/qml/ScriptureSettings.qml"));
+    require(settings.open(QIODevice::ReadOnly));
+    const QString settingsText = QString::fromUtf8(settings.readAll());
+    require(settingsText.contains(QStringLiteral("notificationPermissionButton")));
+    require(settingsText.contains(QStringLiteral("App.open_notification_settings()")));
+    require(settingsText.contains(QStringLiteral("App.notificationPermissionState === \"runtime-denied\"")));
+    require(settingsText.contains(QStringLiteral("App.notificationPermissionRequested")));
+    QFile bridge(QStringLiteral(SCRIPTURE_SOURCE_DIR "/src/android_notifications.cpp"));
+    require(bridge.open(QIODevice::ReadOnly));
+    require(QString::fromUtf8(bridge.readAll()).contains(QStringLiteral("openNotificationSettings")));
+    QFile controller(QStringLiteral(SCRIPTURE_SOURCE_DIR "/src/controller.cpp"));
+    require(controller.open(QIODevice::ReadOnly));
+    const QString controllerText = QString::fromUtf8(controller.readAll());
+    require(controllerText.contains(QStringLiteral("open_notification_settings")));
+    require(controllerText.contains(QStringLiteral("deniedRecovery")));
+    require(controllerText.contains(QStringLiteral("m_notificationPermissionRequested")));
+    QFile receiver(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/src/org/davidjm/scripture/DailyVerseReceiver.java"));
+    require(receiver.open(QIODevice::ReadOnly));
+    const QString receiverText = QString::fromUtf8(receiver.readAll());
+    require(receiverText.contains(QStringLiteral("ACTION_DAILY.equals(action)")));
+    require(receiverText.contains(QStringLiteral("ACTION_TIMEZONE_CHANGED")));
+    require(receiverText.contains(QStringLiteral("ACTION_PACKAGE_REPLACED")));
+    QFile activity(QStringLiteral(SCRIPTURE_SOURCE_DIR "/android/src/org/davidjm/scripture/MainActivity.java"));
+    require(activity.open(QIODevice::ReadOnly));
+    require(QString::fromUtf8(activity.readAll()).contains(QStringLiteral("onRequestPermissionsResult")));
+    return 0;
+}

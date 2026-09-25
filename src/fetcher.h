@@ -11,6 +11,7 @@ class QNetworkReply;
 bool shouldRetryRange(const QString &provider, const QString &rangeReference,
                       const QString &anchorReference, const QByteArray &body,
                       int httpStatus, bool alreadyRetried = false);
+bool isTransientFetchFailure(const QString &error, int httpStatus);
 
 class Fetcher : public QObject
 {

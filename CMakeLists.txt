@@ -22,6 +22,8 @@ project(scriptureandroid VERSION ${SCRIPTURE_VERSION} LANGUAGES CXX)
 set(SCRIPTURE_OPENSSL_VERSION "3.0.22")
 set(SCRIPTURE_OPENSSL_SOURCE_SHA256 "67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81")
 set(SCRIPTURE_OPENSSL_API_LEVEL 28)
+set(SCRIPTURE_ANDROID_MIN_SDK_VERSION 28)
+set(SCRIPTURE_ANDROID_TARGET_SDK_VERSION 36)
 set(SCRIPTURE_ANDROID_NDK_VERSION "27.2.12479018")
 set(SCRIPTURE_ANDROID_CLANG_VERSION "17.0.2")
 string(LENGTH "${SCRIPTURE_OPENSSL_SOURCE_SHA256}" SCRIPTURE_OPENSSL_SOURCE_HASH_LENGTH)
@@ -64,7 +66,11 @@ qt_add_executable(scriptureandroid MANUAL_FINALIZATION
     src/fetcher.cpp
     src/favorites.cpp
     src/references.cpp
+    src/passage_cache.cpp
     src/secrets.cpp
+    src/verse_card.cpp
+    src/android_notifications.cpp
+    src/android_share.cpp
     src/updater.cpp
 )
 
@@ -89,6 +95,9 @@ qt_add_resources(scriptureandroid "qml"
 )
 
 if(ANDROID)
+    if(NOT SCRIPTURE_ANDROID_MIN_SDK_VERSION EQUAL SCRIPTURE_OPENSSL_API_LEVEL)
+        message(FATAL_ERROR "Android min SDK and OpenSSL API level must match")
+    endif()
     if(NOT "${ANDROID_NDK_VERSION}" STREQUAL "${SCRIPTURE_ANDROID_NDK_VERSION}")
         message(FATAL_ERROR "Android NDK ${SCRIPTURE_ANDROID_NDK_VERSION} is required")
     endif()
@@ -103,8 +112,9 @@ if(ANDROID)
         QT_ANDROID_PACKAGE_NAME "org.davidjm.scripture"
         QT_ANDROID_VERSION_CODE ${SCRIPTURE_VERSION_CODE}
         QT_ANDROID_VERSION_NAME "${SCRIPTURE_VERSION}"
-        QT_ANDROID_MIN_SDK_VERSION ${SCRIPTURE_OPENSSL_API_LEVEL}
-        QT_ANDROID_TARGET_SDK_VERSION 36
+         QT_ANDROID_MIN_SDK_VERSION ${SCRIPTURE_ANDROID_MIN_SDK_VERSION}
+         QT_ANDROID_TARGET_SDK_VERSION ${SCRIPTURE_ANDROID_TARGET_SDK_VERSION}
+
     )
     set(OPENSSL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android/libs/${ANDROID_ABI}")
     set(OPENSSL_LIBRARIES
@@ -165,10 +175,56 @@ if(BUILD_TESTING)
         src/fetcher.cpp
         src/references.cpp
         src/favorites.cpp
+        src/passage_cache.cpp
         src/secrets.cpp
+        src/verse_card.cpp
     )
     target_include_directories(scripture_core_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(scripture_core_tests PRIVATE Qt6::Core Qt6::Network)
+    target_link_libraries(scripture_core_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
     qt_finalize_executable(scripture_core_tests)
     add_test(NAME scripture_core_tests COMMAND scripture_core_tests)
+    set_tests_properties(scripture_core_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(scripture_manifest_tests MANUAL_FINALIZATION
+        tests/test_manifest.cpp
+    )
+    target_compile_definitions(scripture_manifest_tests PRIVATE
+        SCRIPTURE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(scripture_manifest_tests PRIVATE Qt6::Core)
+    qt_finalize_executable(scripture_manifest_tests)
+    add_test(NAME scripture_manifest_tests COMMAND scripture_manifest_tests)
+
+    qt_add_executable(scripture_qml_tests MANUAL_FINALIZATION
+        tests/test_qml.cpp
+        src/controller.cpp
+        src/fetcher.cpp
+        src/favorites.cpp
+        src/references.cpp
+        src/passage_cache.cpp
+        src/secrets.cpp
+        src/verse_card.cpp
+        src/android_notifications.cpp
+        src/android_share.cpp
+        src/updater.cpp
+    )
+    target_include_directories(scripture_qml_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(scripture_qml_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Qml
+        Qt6::Quick
+        Qt6::Network
+        Qt6::QuickControls2
+    )
+    qt_add_resources(scripture_qml_tests "qml"
+        PREFIX "/"
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/qml/main.qml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/qml/ScriptureSettings.qml"
+    )
+    qt_finalize_executable(scripture_qml_tests)
+    add_test(NAME scripture_qml_tests COMMAND scripture_qml_tests)
+    set_tests_properties(scripture_qml_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

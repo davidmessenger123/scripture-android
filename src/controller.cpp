@@ -1,7 +1,15 @@
 #include "controller.h"
 
+#include "android_notifications.h"
+#include "android_share.h"
+
+#include <QClipboard>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -18,6 +26,19 @@ QRegularExpression autoOpenRx()
 {
     static const QRegularExpression rx(QStringLiteral("^([01]\\d|2[0-3]):[0-5]\\d$"));
     return rx;
+}
+
+QString notificationGuidance(const QString &state)
+{
+    if (state == QStringLiteral("runtime-denied"))
+        return QStringLiteral("Notifications are denied. Enable them for Scripture in Android Settings.");
+    if (state == QStringLiteral("app-blocked"))
+        return QStringLiteral("Notifications are blocked for Scripture. Enable them in Android Settings.");
+    if (state == QStringLiteral("channel-disabled"))
+        return QStringLiteral("The Daily verse notification channel is disabled. Enable it in Android Settings.");
+    if (state == QStringLiteral("pending"))
+        return QStringLiteral("Notification permission is pending. Complete the Android permission prompt.");
+    return QStringLiteral("Daily notifications are unavailable.");
 }
 
 const char kOrg[] = "davidjm";
@@ -125,8 +146,10 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
     , m_settings(QLatin1String(kOrg), QLatin1String(kApp))
     , m_legacySettings(QLatin1String(kOrg), QLatin1String(kLegacyApp))
-    , m_secrets(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
-    , m_store(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+    , m_dataDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+    , m_secrets(m_dataDir)
+    , m_store(m_dataDir)
+    , m_cache(m_dataDir)
     , m_fetcher(this)
 {
     for (const QString &key : {QStringLiteral("translation"), QStringLiteral("fixedReference"), QStringLiteral("autoOpenAt"), QStringLiteral("lastAutoOpenDay")}) {
@@ -173,7 +196,18 @@ AppController::AppController(QObject *parent)
         }
     }
 
+    repairPersistedSettings();
     m_lastAutoOpenDay = m_settings.value(QStringLiteral("lastAutoOpenDay")).toString().trimmed();
+    const QString savedBook = setting(QStringLiteral("bookFilter"));
+    m_selectedBook = bookOptions().contains(savedBook) ? savedBook : QString();
+    const QString savedTopic = setting(QStringLiteral("topicFilter"));
+    m_selectedTopic = topicOptions().contains(savedTopic) ? savedTopic : QString();
+    m_verseFontSize = qBound(MinFontSize, setting(QStringLiteral("verseFontSize"), QString::number(DefaultFontSize)).toInt(), MaxFontSize);
+    m_scrimOpacity = qBound(0, setting(QStringLiteral("scrimOpacity"), QString::number(DefaultScrimOpacity)).toInt(), 100);
+    m_revealSpeed = qBound(0, setting(QStringLiteral("revealSpeed"), QString::number(DefaultRevealSpeed)).toInt(), 100);
+    m_deck.setFilters(m_selectedBook, m_selectedTopic);
+    if (m_deck.references().isEmpty() && filtersActive())
+        setActionNotice(QStringLiteral("No verses match the selected filters."), true);
     m_revealTimer.setInterval(RevealIntervalMs);
     connect(&m_revealTimer, &QTimer::timeout, this, &AppController::onRevealTick);
 
@@ -182,6 +216,9 @@ AppController::AppController(QObject *parent)
 
     m_autoOpenTimer.setInterval(30000);
     connect(&m_autoOpenTimer, &QTimer::timeout, this, &AppController::onAutoOpenTimer);
+
+    m_notificationPermissionTimer.setInterval(250);
+    connect(&m_notificationPermissionTimer, &QTimer::timeout, this, &AppController::refresh_notification_status);
 
     m_fetchTimeout.setSingleShot(true);
     connect(&m_fetchTimeout, &QTimer::timeout, this, &AppController::onFetchTimeout);
@@ -197,8 +234,25 @@ AppController::AppController(QObject *parent)
         if (m_errorText.isEmpty())
             m_errorText = QStringLiteral("Favorites: %1").arg(error.what());
     }
+    try {
+        m_cache.ensureDir();
+        m_cache.compact();
+    } catch (const PassageCacheError &error) {
+        if (m_errorText.isEmpty())
+            m_errorText = QStringLiteral("Cache: %1").arg(error.what());
+    }
 
     syncAutoOpenTimer();
+    QString scheduleReason;
+    if (!syncNotificationSchedule(&scheduleReason) && AndroidNotifications::supported()) {
+        m_settings.remove(QStringLiteral("dailyNotificationAt"));
+        m_settings.sync();
+        m_settingsNotice = QStringLiteral("Daily notification setting removed: %1.").arg(scheduleReason);
+        m_settingsNoticeError = true;
+    } else if (!scheduleReason.isEmpty() && m_settingsNotice.isEmpty()) {
+        m_settingsNotice = scheduleReason;
+        m_settingsNoticeError = m_notificationPermissionState != QStringLiteral("pending");
+    }
     check_auto_open();
     emit favoritesChanged();
 }
@@ -208,12 +262,359 @@ QString AppController::setting(const QString &key, const QString &defaultValue) 
     return m_settings.value(key, defaultValue).toString().trimmed();
 }
 
+void AppController::repairPersistedSettings()
+{
+    QStringList repairs;
+    const QString translation = setting(QStringLiteral("translation"), QStringLiteral("ESV")).toUpper();
+    if (translation != QLatin1String("ESV") && translation != QLatin1String("WEB")
+        && translation != QLatin1String("KJV")) {
+        m_settings.setValue(QStringLiteral("translation"), QStringLiteral("ESV"));
+        repairs.append(QStringLiteral("translation"));
+    } else if (translation != setting(QStringLiteral("translation"))) {
+        m_settings.setValue(QStringLiteral("translation"), translation);
+        repairs.append(QStringLiteral("translation"));
+    }
+    const QString fixed = setting(QStringLiteral("fixedReference"));
+    const QString normalizedFixed = References::normalizeReference(fixed);
+    if (!fixed.isEmpty() && normalizedFixed.isEmpty()) {
+        m_settings.remove(QStringLiteral("fixedReference"));
+        repairs.append(QStringLiteral("fixed verse"));
+    } else if (!fixed.isEmpty() && normalizedFixed != fixed) {
+        m_settings.setValue(QStringLiteral("fixedReference"), normalizedFixed);
+        repairs.append(QStringLiteral("fixed verse"));
+    }
+    for (const QString &key : {QStringLiteral("autoOpenAt"), QStringLiteral("dailyNotificationAt")}) {
+        const QString value = setting(key);
+        if (!value.isEmpty() && !autoOpenRx().match(value).hasMatch()) {
+            m_settings.remove(key);
+            repairs.append(key == QStringLiteral("autoOpenAt")
+                               ? QStringLiteral("auto-open time")
+                               : QStringLiteral("daily time"));
+        }
+    }
+    const QString day = setting(QStringLiteral("lastAutoOpenDay"));
+    if (!day.isEmpty() && !QRegularExpression(QStringLiteral("^\\d{4}-\\d{1,2}-\\d{1,2}$")).match(day).hasMatch()) {
+        m_settings.remove(QStringLiteral("lastAutoOpenDay"));
+        repairs.append(QStringLiteral("auto-open day"));
+    }
+    struct NumericSetting
+    {
+        QString key;
+        int low;
+        int high;
+        int fallback;
+    };
+    for (const NumericSetting &numeric : {
+             NumericSetting{QStringLiteral("verseFontSize"), MinFontSize, MaxFontSize, DefaultFontSize},
+             NumericSetting{QStringLiteral("scrimOpacity"), 0, 100, DefaultScrimOpacity},
+             NumericSetting{QStringLiteral("revealSpeed"), 0, 100, DefaultRevealSpeed}}) {
+        bool ok = false;
+        const QString raw = setting(numeric.key, QString::number(numeric.fallback));
+        const int value = raw.toInt(&ok);
+        const int repaired = ok ? qBound(numeric.low, value, numeric.high) : numeric.fallback;
+        if (!ok || repaired != value) {
+            m_settings.setValue(numeric.key, repaired);
+            repairs.append(numeric.key);
+        }
+    }
+    const QString book = setting(QStringLiteral("bookFilter"));
+    if (!book.isEmpty() && !References::bookOptions().contains(book)) {
+        m_settings.remove(QStringLiteral("bookFilter"));
+        repairs.append(QStringLiteral("book filter"));
+    }
+    const QString topic = setting(QStringLiteral("topicFilter"));
+    if (!topic.isEmpty() && !References::topicOptions().contains(topic)) {
+        m_settings.remove(QStringLiteral("topicFilter"));
+        repairs.append(QStringLiteral("topic filter"));
+    }
+    if (!repairs.isEmpty()) {
+        m_settings.sync();
+        m_settingsNotice = QStringLiteral("Settings repaired: %1.").arg(repairs.join(QStringLiteral(", ")));
+        m_settingsNoticeError = m_settings.status() != QSettings::NoError;
+    }
+}
+
 void AppController::syncAutoOpenTimer()
 {
     if (setting(QStringLiteral("autoOpenAt")).isEmpty())
         m_autoOpenTimer.stop();
     else if (!m_autoOpenTimer.isActive())
         m_autoOpenTimer.start();
+}
+
+QStringList AppController::bookOptions() const
+{
+    return References::bookOptions();
+}
+
+QStringList AppController::topicOptions() const
+{
+    return References::topicOptions();
+}
+
+void AppController::setSelectedBook(const QString &book)
+{
+    const QString selected = book.trimmed();
+    const QString normalized = References::bookOptions().contains(selected) ? selected : QString();
+    if (m_selectedBook == normalized)
+        return;
+    m_selectedBook = normalized;
+    m_settings.setValue(QStringLiteral("bookFilter"), m_selectedBook);
+    m_settings.sync();
+    m_deck.setFilters(m_selectedBook, m_selectedTopic);
+    if (m_deck.references().isEmpty())
+        setActionNotice(QStringLiteral("No verses match the selected filters."), true);
+    emit filtersChanged();
+}
+
+void AppController::setSelectedTopic(const QString &topic)
+{
+    const QString selected = topic.trimmed();
+    const QString normalized = References::topicOptions().contains(selected) ? selected : QString();
+    if (m_selectedTopic == normalized)
+        return;
+    m_selectedTopic = normalized;
+    m_settings.setValue(QStringLiteral("topicFilter"), m_selectedTopic);
+    m_settings.sync();
+    m_deck.setFilters(m_selectedBook, m_selectedTopic);
+    if (m_deck.references().isEmpty())
+        setActionNotice(QStringLiteral("No verses match the selected filters."), true);
+    emit filtersChanged();
+}
+
+void AppController::setVerseFontSize(int value)
+{
+    const int clamped = qBound(MinFontSize, value, MaxFontSize);
+    if (m_verseFontSize == clamped)
+        return;
+    m_verseFontSize = clamped;
+    m_settings.setValue(QStringLiteral("verseFontSize"), m_verseFontSize);
+    m_settings.sync();
+    startReveal();
+    emit appearanceChanged();
+}
+
+void AppController::setScrimOpacity(int value)
+{
+    const int clamped = qBound(0, value, 100);
+    if (m_scrimOpacity == clamped)
+        return;
+    m_scrimOpacity = clamped;
+    m_settings.setValue(QStringLiteral("scrimOpacity"), m_scrimOpacity);
+    m_settings.sync();
+    emit appearanceChanged();
+}
+
+void AppController::setRevealSpeed(int value)
+{
+    const int clamped = qBound(0, value, 100);
+    if (m_revealSpeed == clamped)
+        return;
+    m_revealSpeed = clamped;
+    m_settings.setValue(QStringLiteral("revealSpeed"), m_revealSpeed);
+    m_settings.sync();
+    startReveal();
+    emit appearanceChanged();
+}
+
+bool AppController::notificationAvailable() const
+{
+    return AndroidNotifications::supported();
+}
+
+bool AppController::notificationPermissionGranted() const
+{
+    return m_notificationPermissionState == QStringLiteral("granted");
+}
+
+QString AppController::notificationPermissionState() const
+{
+    return m_notificationPermissionState;
+}
+
+bool AppController::notificationPermissionRequested() const
+{
+    return m_notificationPermissionRequested;
+}
+
+void AppController::setActionNotice(const QString &notice, bool error)
+{
+    m_actionNotice = notice;
+    m_actionNoticeError = error;
+    emit actionNoticeChanged();
+}
+
+void AppController::updateNotificationSnapshot()
+{
+    if (!hasContent())
+        return;
+    const VerseCardContent content{m_contextBefore, m_verseText, m_contextAfter,
+                                     m_verseReference, m_translationId, m_translationName};
+    AndroidNotifications::updateSnapshot(m_verseReference, VerseCardRenderer::plainText(content));
+}
+
+bool AppController::syncNotificationSchedule(QString *reason)
+{
+    if (reason)
+        reason->clear();
+    if (AndroidNotifications::supported()) {
+        m_notificationPermissionState = AndroidNotifications::permissionState();
+        m_notificationPermissionRequested = AndroidNotifications::permissionRequested();
+    } else {
+        m_notificationPermissionState = QStringLiteral("unavailable");
+        m_notificationPermissionRequested = false;
+    }
+    const QString time = setting(QStringLiteral("dailyNotificationAt"));
+    if (time.isEmpty()) {
+        if (AndroidNotifications::supported() && !AndroidNotifications::cancel()) {
+            if (reason)
+                *reason = QStringLiteral("could not cancel the daily notification schedule");
+            return false;
+        }
+        return true;
+    }
+    if (!AndroidNotifications::supported()) {
+        if (reason)
+            *reason = QStringLiteral("daily notifications are unavailable on this platform");
+        return true;
+    }
+    if (m_notificationPermissionState == QStringLiteral("pending")) {
+        if (reason)
+            *reason = notificationGuidance(m_notificationPermissionState);
+        return true;
+    }
+    if (m_notificationPermissionState != QStringLiteral("granted")) {
+        AndroidNotifications::cancel();
+        if (reason)
+            *reason = notificationGuidance(m_notificationPermissionState);
+        return true;
+    }
+    if (!AndroidNotifications::schedule(time)) {
+        AndroidNotifications::cancel();
+        if (reason)
+            *reason = QStringLiteral("the daily notification could not be scheduled");
+        return false;
+    }
+    return true;
+}
+
+void AppController::request_notification_permission()
+{
+    if (!AndroidNotifications::supported()) {
+        m_notificationPermissionState = QStringLiteral("unavailable");
+        setActionNotice(QStringLiteral("Daily notifications are unavailable on this platform."), true);
+        m_settingsNotice = QStringLiteral("Daily notifications are unavailable on this platform.");
+        m_settingsNoticeError = true;
+        emit settingsChanged();
+        emit notificationChanged();
+        return;
+    }
+    const QString requestedState = AndroidNotifications::requestPermission();
+    m_notificationPermissionState = requestedState.isEmpty()
+        ? AndroidNotifications::permissionState() : requestedState;
+    m_notificationPermissionRequested = AndroidNotifications::permissionRequested();
+    if (m_notificationPermissionState == QStringLiteral("pending")) {
+        m_notificationPermissionTimer.start();
+        setActionNotice(notificationGuidance(m_notificationPermissionState), false);
+        m_settingsNotice = QStringLiteral("Complete the Android notification permission prompt.");
+        m_settingsNoticeError = false;
+        emit settingsChanged();
+        emit notificationChanged();
+        return;
+    }
+    if (m_notificationPermissionState == QStringLiteral("granted")) {
+        QString reason;
+        if (!syncNotificationSchedule(&reason)) {
+            m_settings.remove(QStringLiteral("dailyNotificationAt"));
+            m_settings.sync();
+            setActionNotice(reason, true);
+            m_settingsNotice = QStringLiteral("Daily notification scheduling failed; the time was removed.");
+            m_settingsNoticeError = true;
+        } else {
+            setActionNotice(QStringLiteral("Notification permission granted."));
+            m_settingsNotice = QStringLiteral("Notification permission granted.");
+            m_settingsNoticeError = false;
+        }
+    } else {
+        setActionNotice(notificationGuidance(m_notificationPermissionState), true);
+        m_settingsNotice = notificationGuidance(m_notificationPermissionState);
+        m_settingsNoticeError = true;
+    }
+    emit settingsChanged();
+    emit notificationChanged();
+}
+
+bool AppController::open_notification_settings()
+{
+    const QString state = m_notificationPermissionState;
+    const bool deniedRecovery = state == QStringLiteral("runtime-denied")
+        && m_notificationPermissionRequested;
+    if (state != QStringLiteral("app-blocked") && state != QStringLiteral("channel-disabled")
+        && !deniedRecovery) {
+        if (state == QStringLiteral("runtime-denied"))
+            setActionNotice(QStringLiteral("Request notification permission before opening Android Settings."), true);
+        else
+            setActionNotice(QStringLiteral("Android notification settings recovery is unavailable for this state."), true);
+        return false;
+    }
+    if (!AndroidNotifications::openNotificationSettings(state)) {
+        setActionNotice(notificationGuidance(state), true);
+        m_settingsNotice = QStringLiteral("Android notification settings could not be opened. Enable notifications manually, then return to Scripture.");
+        m_settingsNoticeError = true;
+        emit settingsChanged();
+        return false;
+    }
+    setActionNotice(QStringLiteral("Android notification settings opened."), false);
+    m_settingsNotice = QStringLiteral("Android notification settings opened. Return to Scripture to refresh the notification state.");
+    m_settingsNoticeError = false;
+    emit settingsChanged();
+    return true;
+}
+
+void AppController::refresh_notification_status()
+{
+    if (!AndroidNotifications::supported()) {
+        m_notificationPermissionState = QStringLiteral("unavailable");
+        emit notificationChanged();
+        return;
+    }
+    QString state = AndroidNotifications::consumePermissionResult();
+    if (state.isEmpty())
+        state = AndroidNotifications::permissionState();
+    const QString previous = m_notificationPermissionState;
+    m_notificationPermissionState = state;
+    m_notificationPermissionRequested = AndroidNotifications::permissionRequested();
+    if (state != QStringLiteral("pending"))
+        m_notificationPermissionTimer.stop();
+    if (state == QStringLiteral("pending")) {
+        emit notificationChanged();
+        return;
+    }
+    if (state == QStringLiteral("granted")) {
+        QString reason;
+        if (!syncNotificationSchedule(&reason)) {
+            m_settings.remove(QStringLiteral("dailyNotificationAt"));
+            m_settings.sync();
+            setActionNotice(reason, true);
+            m_settingsNotice = QStringLiteral("Daily notification scheduling failed; the time was removed.");
+            m_settingsNoticeError = true;
+            emit settingsChanged();
+        } else if (previous != state) {
+            setActionNotice(QStringLiteral("Notification permission granted."));
+            m_settingsNotice = QStringLiteral("Notification permission granted.");
+            m_settingsNoticeError = false;
+            emit settingsChanged();
+        }
+    } else {
+        AndroidNotifications::cancel();
+        if (previous != state) {
+            setActionNotice(notificationGuidance(state), true);
+            m_settingsNotice = notificationGuidance(state);
+            m_settingsNoticeError = true;
+            emit settingsChanged();
+        }
+    }
+    emit notificationChanged();
 }
 
 void AppController::setOverlayOpen(bool value)
@@ -243,6 +644,16 @@ void AppController::setSettingsOpen(bool value)
 void AppController::save_settings(const QString &apiKey, const QString &translation,
                                   const QString &fixedReference, const QString &autoOpenAt)
 {
+    save_all_settings(apiKey, translation, fixedReference, autoOpenAt,
+                      setting(QStringLiteral("dailyNotificationAt")), m_verseFontSize,
+                      m_scrimOpacity, m_revealSpeed);
+}
+
+void AppController::save_all_settings(const QString &apiKey, const QString &translation,
+                                      const QString &fixedReference, const QString &autoOpenAt,
+                                      const QString &dailyNotificationAt, int verseFontSize,
+                                      int scrimOpacity, int revealSpeed)
+{
     const QString autoTime = autoOpenAt.trimmed();
     if (!autoTime.isEmpty() && !autoOpenRx().match(autoTime).hasMatch()) {
         m_settingsNotice = QStringLiteral("Auto-open must be a 24-hour time like 07:30.");
@@ -250,6 +661,16 @@ void AppController::save_settings(const QString &apiKey, const QString &translat
         emit settingsChanged();
         return;
     }
+    const QString dailyTime = dailyNotificationAt.trimmed();
+    if (!dailyTime.isEmpty() && !autoOpenRx().match(dailyTime).hasMatch()) {
+        m_settingsNotice = QStringLiteral("Daily notification must be a 24-hour time like 08:00.");
+        m_settingsNoticeError = true;
+        emit settingsChanged();
+        return;
+    }
+    const int selectedFontSize = qBound(MinFontSize, verseFontSize, MaxFontSize);
+    const int selectedScrimOpacity = qBound(0, scrimOpacity, 100);
+    const int selectedRevealSpeed = qBound(0, revealSpeed, 100);
     QString selectedTranslation = translation.trimmed().toUpper();
     if (selectedTranslation.isEmpty())
         selectedTranslation = QStringLiteral("ESV");
@@ -281,11 +702,12 @@ void AppController::save_settings(const QString &apiKey, const QString &translat
     const QVariant oldTranslation = m_settings.value(QStringLiteral("translation"));
     const QVariant oldFixed = m_settings.value(QStringLiteral("fixedReference"));
     const QVariant oldAuto = m_settings.value(QStringLiteral("autoOpenAt"));
-    m_settings.setValue(QStringLiteral("translation"), selectedTranslation);
-    m_settings.setValue(QStringLiteral("fixedReference"), fixed);
-    m_settings.setValue(QStringLiteral("autoOpenAt"), autoTime);
-    m_settings.sync();
-    if (m_settings.status() != QSettings::NoError) {
+    const QVariant oldDaily = m_settings.value(QStringLiteral("dailyNotificationAt"));
+    const QVariant oldFont = m_settings.value(QStringLiteral("verseFontSize"));
+    const QVariant oldScrim = m_settings.value(QStringLiteral("scrimOpacity"));
+    const QVariant oldSpeed = m_settings.value(QStringLiteral("revealSpeed"));
+    const auto rollbackSettings = [this, oldTranslation, oldFixed, oldAuto, oldDaily,
+                                   oldFont, oldScrim, oldSpeed, oldKey]() {
         if (oldTranslation.isValid())
             m_settings.setValue(QStringLiteral("translation"), oldTranslation);
         else
@@ -298,10 +720,37 @@ void AppController::save_settings(const QString &apiKey, const QString &translat
             m_settings.setValue(QStringLiteral("autoOpenAt"), oldAuto);
         else
             m_settings.remove(QStringLiteral("autoOpenAt"));
+        if (oldDaily.isValid())
+            m_settings.setValue(QStringLiteral("dailyNotificationAt"), oldDaily);
+        else
+            m_settings.remove(QStringLiteral("dailyNotificationAt"));
+        if (oldFont.isValid())
+            m_settings.setValue(QStringLiteral("verseFontSize"), oldFont);
+        else
+            m_settings.remove(QStringLiteral("verseFontSize"));
+        if (oldScrim.isValid())
+            m_settings.setValue(QStringLiteral("scrimOpacity"), oldScrim);
+        else
+            m_settings.remove(QStringLiteral("scrimOpacity"));
+        if (oldSpeed.isValid())
+            m_settings.setValue(QStringLiteral("revealSpeed"), oldSpeed);
+        else
+            m_settings.remove(QStringLiteral("revealSpeed"));
         m_settings.sync();
         QString rollbackError;
-        const bool keyRestored = oldKey.isEmpty() ? m_secrets.clear(&rollbackError) : m_secrets.save(oldKey, &rollbackError);
-        if (!keyRestored) {
+        return oldKey.isEmpty() ? m_secrets.clear(&rollbackError)
+                                : m_secrets.save(oldKey, &rollbackError);
+    };
+    m_settings.setValue(QStringLiteral("translation"), selectedTranslation);
+    m_settings.setValue(QStringLiteral("fixedReference"), fixed);
+    m_settings.setValue(QStringLiteral("autoOpenAt"), autoTime);
+    m_settings.setValue(QStringLiteral("dailyNotificationAt"), dailyTime);
+    m_settings.setValue(QStringLiteral("verseFontSize"), selectedFontSize);
+    m_settings.setValue(QStringLiteral("scrimOpacity"), selectedScrimOpacity);
+    m_settings.setValue(QStringLiteral("revealSpeed"), selectedRevealSpeed);
+    m_settings.sync();
+    if (m_settings.status() != QSettings::NoError) {
+        if (!rollbackSettings()) {
             m_settingsNotice = QStringLiteral("Settings and API key could not be saved.");
             m_settingsNoticeError = true;
             emit settingsChanged();
@@ -312,10 +761,29 @@ void AppController::save_settings(const QString &apiKey, const QString &translat
         emit settingsChanged();
         return;
     }
+    QString scheduleReason;
+    if (!syncNotificationSchedule(&scheduleReason) && AndroidNotifications::supported()) {
+        if (!rollbackSettings()) {
+            m_settingsNotice = QStringLiteral("Settings and API key could not be rolled back.");
+            m_settingsNoticeError = true;
+            emit settingsChanged();
+            return;
+        }
+        syncNotificationSchedule();
+        m_settingsNotice = QStringLiteral("Settings were not saved: %1.").arg(scheduleReason);
+        m_settingsNoticeError = true;
+        emit settingsChanged();
+        return;
+    }
     m_apiKey = newKey;
+    m_verseFontSize = selectedFontSize;
+    m_scrimOpacity = selectedScrimOpacity;
+    m_revealSpeed = selectedRevealSpeed;
+    startReveal();
     m_settingsNotice = QStringLiteral("Saved.");
     m_settingsNoticeError = false;
     emit settingsChanged();
+    emit appearanceChanged();
     syncAutoOpenTimer();
     check_auto_open();
 }
@@ -383,6 +851,11 @@ void AppController::refresh()
         return;
     }
     const QString ref = m_deck.draw(anchor());
+    if (ref.isEmpty()) {
+        m_errorText = QStringLiteral("No verses match the selected filters.");
+        emit verseChanged();
+        return;
+    }
     m_verseAnchor = ref;
     fetch(ref, true);
 }
@@ -454,6 +927,85 @@ void AppController::remove_favorite(const QString &reference)
     }
 }
 
+bool AppController::copy_verse()
+{
+    if (!hasContent()) {
+        setActionNotice(QStringLiteral("There is no verse to copy."), true);
+        return false;
+    }
+    const VerseCardContent content{m_contextBefore, m_verseText, m_contextAfter,
+                                     m_verseReference, m_translationId, m_translationName};
+    QClipboard *clipboard = QGuiApplication::clipboard();
+    if (!clipboard) {
+        setActionNotice(QStringLiteral("Clipboard access is unavailable."), true);
+        return false;
+    }
+    clipboard->setText(VerseCardRenderer::plainText(content));
+    setActionNotice(QStringLiteral("Verse copied."));
+    return true;
+}
+
+bool AppController::share_verse()
+{
+    if (!hasContent()) {
+        setActionNotice(QStringLiteral("There is no verse to share."), true);
+        return false;
+    }
+    const VerseCardContent content{m_contextBefore, m_verseText, m_contextAfter,
+                                     m_verseReference, m_translationId, m_translationName};
+    if (!AndroidShare::shareText(VerseCardRenderer::plainText(content))) {
+        setActionNotice(QStringLiteral("Sharing is unavailable on this platform."), true);
+        return false;
+    }
+    setActionNotice(QStringLiteral("Verse shared."));
+    return true;
+}
+
+bool AppController::save_verse_card()
+{
+    if (!hasContent()) {
+        setActionNotice(QStringLiteral("There is no verse to save."), true);
+        return false;
+    }
+    const VerseCardContent content{m_contextBefore, m_verseText, m_contextAfter,
+                                     m_verseReference, m_translationId, m_translationName};
+    QString path;
+    QString error;
+    if (!VerseCardRenderer::save(content, m_dataDir, &path, &error)) {
+        setActionNotice(error.isEmpty() ? QStringLiteral("Could not save the verse card.") : error, true);
+        return false;
+    }
+    m_lastCardPath = path;
+    setActionNotice(QStringLiteral("Verse card saved."));
+    return true;
+}
+
+bool AppController::share_verse_card()
+{
+    if (!hasContent()) {
+        setActionNotice(QStringLiteral("There is no verse card to share."), true);
+        return false;
+    }
+    const VerseCardContent content{m_contextBefore, m_verseText, m_contextAfter,
+                                     m_verseReference, m_translationId, m_translationName};
+    QString path = m_lastCardPath;
+    if (path.isEmpty() || !QFile::exists(path)
+        || QFileInfo(path).fileName() != VerseCardRenderer::fileName(content)) {
+        QString error;
+        if (!VerseCardRenderer::save(content, m_dataDir, &path, &error)) {
+            setActionNotice(error.isEmpty() ? QStringLiteral("Could not prepare the verse card.") : error, true);
+            return false;
+        }
+    }
+    m_lastCardPath = path;
+    if (!AndroidShare::shareImage(path, VerseCardRenderer::plainText(content))) {
+        setActionNotice(QStringLiteral("Card sharing is unavailable on this platform."), true);
+        return false;
+    }
+    setActionNotice(QStringLiteral("Verse card shared."));
+    return true;
+}
+
 void AppController::check_auto_open()
 {
     const QString target = setting(QStringLiteral("autoOpenAt"));
@@ -478,6 +1030,57 @@ void AppController::onAutoOpenTimer()
     check_auto_open();
 }
 
+void AppController::cacheCurrentPassage(const QString &provider, const QString &before,
+                                         const QString &focal, const QString &after,
+                                         const QString &reference, const QString &translationId,
+                                         const QString &translationName, const QString &attribution)
+{
+    PassageCacheEntry entry;
+    entry.provider = provider;
+    entry.requestedReference = m_pendingAnchor;
+    entry.rangeReference = m_pendingReference;
+    entry.focalVerse = m_pendingFocal;
+    entry.before = before;
+    entry.focal = focal;
+    entry.after = after;
+    entry.reference = reference;
+    entry.translationId = translationId;
+    entry.translationName = translationName;
+    entry.attribution = attribution;
+    entry.keyFingerprint = provider == QLatin1String("esv") ? keyFingerprint() : QString();
+    entry.storedAt = QDateTime::currentSecsSinceEpoch();
+    try {
+        m_cache.put(entry);
+    } catch (const PassageCacheError &) {
+        if (m_fetchNotice.isEmpty())
+            m_fetchNotice = QStringLiteral("Verse loaded; offline cache is unavailable.");
+    }
+}
+
+bool AppController::applyCachedPassage()
+{
+    if (m_pendingProvider.isEmpty() || m_pendingAnchor.isEmpty() || m_pendingReference.isEmpty())
+        return false;
+    try {
+        const std::optional<PassageCacheEntry> entry = m_cache.get(
+            m_pendingProvider, m_pendingAnchor, m_pendingReference, m_pendingFocal,
+            m_pendingProvider == QLatin1String("esv") ? keyFingerprint() : QString());
+        if (!entry.has_value())
+            return false;
+        m_fetchTimeout.stop();
+        m_fetcher.abort();
+        m_loading = false;
+        emit loadingChanged();
+        m_fetchNotice = QStringLiteral("Offline: showing the last saved passage.");
+        m_errorText.clear();
+        applyVerse(entry->before, entry->focal, entry->after, entry->reference,
+                   entry->translationId, entry->translationName);
+        return true;
+    } catch (const PassageCacheError &) {
+        return false;
+    }
+}
+
 QString AppController::providerChoice() const
 {
     QString choice = setting(QStringLiteral("translation"), QStringLiteral("ESV")).toLower();
@@ -491,6 +1094,14 @@ QString AppController::apiKey() const
     return m_apiKey;
 }
 
+QString AppController::keyFingerprint() const
+{
+    if (m_apiKey.isEmpty())
+        return QString();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(m_apiKey.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
+}
+
 void AppController::fetch(const QString &anchor, bool recordHistoryEntry)
 {
     const QString normalizedAnchor = References::normalizeReference(anchor);
@@ -499,6 +1110,7 @@ void AppController::fetch(const QString &anchor, bool recordHistoryEntry)
         emit verseChanged();
         return;
     }
+    m_verseAnchor = normalizedAnchor;
     m_fetchSeq++;
     const int tag = m_fetchSeq;
     m_fetcher.abort();
@@ -506,9 +1118,11 @@ void AppController::fetch(const QString &anchor, bool recordHistoryEntry)
     emit loadingChanged();
     m_errorText.clear();
     m_fetchNotice.clear();
-    m_translationAttribution.clear();
+    if (!m_actionNotice.isEmpty())
+        setActionNotice(QString());
     m_pendingAnchor = normalizedAnchor;
     m_pendingReference = References::rangeQuery(normalizedAnchor);
+    m_pendingProvider = providerChoice();
     m_pendingFocal = References::focalVerse(normalizedAnchor);
     m_webRetried = false;
     m_esvRetried = false;
@@ -523,11 +1137,13 @@ void AppController::fetch(const QString &anchor, bool recordHistoryEntry)
     const QString key = apiKey();
 
     if (choice == QLatin1String("esv") && !key.isEmpty()) {
+        m_pendingProvider = QStringLiteral("esv");
         m_translationId.clear();
         m_translationName.clear();
         m_fetcher.fetchEsv(tag, m_pendingReference, key);
         emit verseChanged();
     } else if (choice == QLatin1String("esv")) {
+        m_pendingProvider = QStringLiteral("web");
         m_fetchNotice = QStringLiteral("Set an ESV API key in Settings to read the ESV — showing the World English Bible.");
         m_currentWebTranslation = QStringLiteral("web");
         m_fetcher.fetchWeb(tag, m_pendingReference, QStringLiteral("web"));
@@ -545,6 +1161,8 @@ void AppController::onFetchTimeout()
         return;
     m_fetchSeq++;
     m_fetcher.abort();
+    if (applyCachedPassage())
+        return;
     m_loading = false;
     emit loadingChanged();
     m_errorText = QStringLiteral("The verse fetch timed out. Try again.");
@@ -572,6 +1190,8 @@ void AppController::onEsvResult(int tag, const QString &body, const QString &err
         return;
     }
     if (!ok) {
+        if (isTransientFetchFailure(error, status) && applyCachedPassage())
+            return;
         m_loading = false;
         emit loadingChanged();
         m_errorText = QStringLiteral("Could not load from the ESV API. Check your key and connection.");
@@ -588,7 +1208,9 @@ void AppController::onEsvResult(int tag, const QString &body, const QString &err
         attribution = payload.value(QStringLiteral("attribution")).toString().trimmed();
     if (attribution.isEmpty())
         attribution = QLatin1String(kEsvAttribution);
-    applyVerse(passage.before, passage.focal, passage.after, reference, QStringLiteral("esv"), QStringLiteral("English Standard Version"), attribution);
+    cacheCurrentPassage(QStringLiteral("esv"), passage.before, passage.focal, passage.after,
+                        reference, QStringLiteral("esv"), QStringLiteral("English Standard Version"), attribution);
+    applyVerse(passage.before, passage.focal, passage.after, reference, QStringLiteral("esv"), QStringLiteral("English Standard Version"));
 }
 
 void AppController::onWebResult(int tag, const QString &body, const QString &error, int status)
@@ -611,6 +1233,8 @@ void AppController::onWebResult(int tag, const QString &body, const QString &err
         return;
     }
     if (!ok) {
+        if (isTransientFetchFailure(error, status) && applyCachedPassage())
+            return;
         m_loading = false;
         emit loadingChanged();
         m_errorText = QStringLiteral("Could not load that passage. Try again.");
@@ -630,12 +1254,14 @@ void AppController::onWebResult(int tag, const QString &body, const QString &err
     const QString attribution = payload.value(QStringLiteral("attribution")).toString().trimmed().isEmpty()
         ? payload.value(QStringLiteral("copyright")).toString().trimmed()
         : payload.value(QStringLiteral("attribution")).toString().trimmed();
-    applyVerse(passage.before, passage.focal, passage.after, reference, versionId, versionName, attribution);
+    cacheCurrentPassage(m_pendingProvider, passage.before, passage.focal, passage.after,
+                        reference, versionId, versionName, attribution);
+    applyVerse(passage.before, passage.focal, passage.after, reference, versionId, versionName);
 }
 
 void AppController::applyVerse(const QString &before, const QString &focal, const QString &after,
                                const QString &reference, const QString &translationId,
-                               const QString &translationName, const QString &attribution)
+                               const QString &translationName)
 {
     m_contextBefore = before;
     m_verseText = focal;
@@ -644,7 +1270,7 @@ void AppController::applyVerse(const QString &before, const QString &focal, cons
     m_verseReference = normalizedReference.isEmpty() ? m_pendingReference : normalizedReference;
     m_translationId = translationId;
     m_translationName = translationName;
-    m_translationAttribution = attribution;
+    updateNotificationSnapshot();
     m_esvRetried = false;
     m_loading = false;
     emit loadingChanged();
@@ -665,12 +1291,18 @@ void AppController::recordHistory(const QString &anchor)
 
 void AppController::startReveal()
 {
+    m_revealTimer.stop();
     const qsizetype total = m_contextBefore.size() + m_verseText.size() + m_contextAfter.size();
     m_revealTotal = total > 0 ? static_cast<int>(qMin<qsizetype>(total, std::numeric_limits<int>::max())) : 0;
-    m_revealStep = qMax(1, static_cast<int>(std::ceil(static_cast<double>(m_revealTotal) * RevealIntervalMs / RevealDurationMs)));
-    m_revealedChars = 0;
+    m_revealedChars = m_revealSpeed == 0 ? m_revealTotal : 0;
     if (total <= 0)
         return;
+    if (m_revealSpeed == 0) {
+        emit displayTextChanged();
+        return;
+    }
+    const int duration = qBound(250, 4400 - m_revealSpeed * 44, 4400);
+    m_revealStep = qMax(1, static_cast<int>(std::ceil(static_cast<double>(m_revealTotal) * RevealIntervalMs / duration)));
     emit displayTextChanged();
     m_revealTimer.start();
 }
