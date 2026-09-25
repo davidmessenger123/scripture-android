@@ -168,12 +168,13 @@ jobs:
             -DQT_HOST_PATH="$RUNNER_TEMP/Qt/${QT_VERSION}/gcc_64" \
             -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
             -DANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=OFF
       - name: Build Android APK
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build-android --parallel
+          cmake --build build-android --target scriptureandroid --parallel
           test -f build-android/android-build/build/outputs/apk/debug/android-build-debug.apk
           unzip -l build-android/android-build/build/outputs/apk/debug/android-build-debug.apk | grep -F 'lib/arm64-v8a/libscriptureandroid.so'
           unzip -l build-android/android-build/build/outputs/apk/debug/android-build-debug.apk | grep -F 'classes.dex'
