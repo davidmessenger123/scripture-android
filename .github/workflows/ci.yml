@@ -95,7 +95,8 @@ jobs:
             patchelf \
             ninja-build \
             unzip
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          sdk_root="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$sdk_root"
           sdkmanager_path=""
           for candidate in \
             "${ANDROID_SDK_ROOT:-}" \
@@ -110,22 +111,18 @@ jobs:
               "$candidate"/cmdline-tools/*/bin/sdkmanager \
               "$candidate"/tools/bin/sdkmanager; do
               if [[ -x "$manager" ]]; then
-                sdk_root="$candidate"
                 sdkmanager_path="$manager"
                 break 2
               fi
             done
           done
           if [[ -z "$sdkmanager_path" ]] && command -v sdkmanager >/dev/null 2>&1; then
-            sdkmanager_path="$(command -v sdkmanager)"
-            resolved_sdkmanager="$(readlink -f "$sdkmanager_path")"
-            candidate_root="$(dirname "$(dirname "$(dirname "$(dirname "$resolved_sdkmanager")")")")"
-            if [[ -d "$candidate_root/platforms" || -d "$candidate_root/cmdline-tools" || -d "$candidate_root/tools" ]]; then
-              sdk_root="$candidate_root"
+            path_sdkmanager="$(command -v sdkmanager)"
+            if [[ -x "$path_sdkmanager" ]]; then
+              sdkmanager_path="$path_sdkmanager"
             fi
           fi
-          if [[ -z "$sdkmanager_path" || -z "$sdk_root" || ! -w "$sdk_root" ]]; then
-            sdk_root="$RUNNER_TEMP/android-sdk"
+          if [[ -z "$sdkmanager_path" ]]; then
             archive="$RUNNER_TEMP/android-command-line-tools.zip"
             extract="$RUNNER_TEMP/android-command-line-tools"
             rm -rf "$sdk_root" "$extract"
