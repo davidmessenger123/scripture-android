@@ -9,6 +9,8 @@ OPENSSL_SHA256=67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
 OPENSSL_API=28
 NDK_VERSION=27.2.12479018
 ABI=${1:-}
+WRAPPER_PREFIX=aarch64-linux-android
+TARGET_CLANG_PREFIX=aarch64-linux-android
 CHECK_NDK_VERSION_ONLY=0
 if [[ "$ABI" == --check-ndk-version ]]; then
   CHECK_NDK_VERSION_ONLY=1
@@ -21,10 +23,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 if [[ $CHECK_NDK_VERSION_ONLY -eq 0 ]]; then
   case "$ABI" in
-    arm64-v8a) TARGET=android-arm64; MACHINE=AArch64 ;;
-    armeabi-v7a) TARGET=android-arm; MACHINE=ARM ;;
-    x86_64) TARGET=android-x86_64; MACHINE=X86-64 ;;
-    x86) TARGET=android-x86; MACHINE="Intel 80386" ;;
+    arm64-v8a) TARGET=android-arm64; MACHINE=AArch64; WRAPPER_PREFIX=aarch64-linux-android; TARGET_CLANG_PREFIX=aarch64-linux-android ;;
+    armeabi-v7a) TARGET=android-arm; MACHINE=ARM; WRAPPER_PREFIX=arm-linux-androideabi; TARGET_CLANG_PREFIX=armv7a-linux-androideabi ;;
+    x86_64) TARGET=android-x86_64; MACHINE=X86-64; WRAPPER_PREFIX=x86_64-linux-android; TARGET_CLANG_PREFIX=x86_64-linux-android ;;
+    x86) TARGET=android-x86; MACHINE="Intel 80386"; WRAPPER_PREFIX=i686-linux-android; TARGET_CLANG_PREFIX=i686-linux-android ;;
     *) printf 'usage: %s {arm64-v8a|armeabi-v7a|x86_64|x86}\n' "$0" >&2; exit 2 ;;
   esac
 fi
@@ -54,7 +56,73 @@ if [[ $ACTUAL_NDK != "$NDK_VERSION" ]]; then
   printf 'NDK %s is required; found %s\n' "$NDK_VERSION" "$ACTUAL_NDK" >&2
   exit 1
 fi
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64) HOST_TAG=linux-x86_64 ;;
+  Linux:aarch64|Linux:arm64) HOST_TAG=linux-aarch64 ;;
+  Darwin:x86_64|Darwin:arm64) HOST_TAG=darwin-x86_64 ;;
+  *) printf 'Unsupported NDK host: %s:%s\n' "$(uname -s)" "$(uname -m)" >&2; exit 1 ;;
+esac
+NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+if [[ ! -d "$NDK_BIN" ]]; then
+  printf 'NDK toolchain directory is missing: %s\n' "$NDK_BIN" >&2
+  exit 1
+fi
+for tool in clang llvm-ar llvm-ranlib; do
+  if [[ ! -x "$NDK_BIN/$tool" ]]; then
+    printf 'NDK tool is missing or not executable: %s\n' "$NDK_BIN/$tool" >&2
+    exit 1
+  fi
+done
+NDK_TARGET_CLANG="$NDK_BIN/${TARGET_CLANG_PREFIX}${OPENSSL_API}-clang"
+NDK_TARGET_CLANGXX="$NDK_BIN/${TARGET_CLANG_PREFIX}${OPENSSL_API}-clang++"
+if [[ ! -x "$NDK_TARGET_CLANG" || ! -x "$NDK_TARGET_CLANGXX" ]]; then
+  printf 'NDK target compiler is missing or not executable: %s\n' "$NDK_TARGET_CLANG" >&2
+  printf 'NDK target compiler is missing or not executable: %s\n' "$NDK_TARGET_CLANGXX" >&2
+  exit 1
+fi
+NDK_WRAPPER_DIR="$WORK/ndk-wrappers"
+NDK_WRAPPER_CC="$NDK_WRAPPER_DIR/${WRAPPER_PREFIX}-gcc"
+NDK_WRAPPER_CXX="$NDK_WRAPPER_DIR/${WRAPPER_PREFIX}-g++"
+mkdir -p "$NDK_WRAPPER_DIR"
+ln -s "$NDK_TARGET_CLANG" "$NDK_WRAPPER_CC"
+ln -s "$NDK_TARGET_CLANGXX" "$NDK_WRAPPER_CXX"
+wrapper_paths=("$NDK_WRAPPER_CC" "$NDK_WRAPPER_CXX")
+wrapper_targets=("$NDK_TARGET_CLANG" "$NDK_TARGET_CLANGXX")
+for index in "${!wrapper_paths[@]}"; do
+  wrapper_path=${wrapper_paths[$index]}
+  wrapper_target=${wrapper_targets[$index]}
+  if [[ ! -L "$wrapper_path" || ! -x "$wrapper_path" ]]; then
+    printf 'NDK wrapper is missing or not executable: %s\n' "$wrapper_path" >&2
+    exit 1
+  fi
+  if [[ "$(readlink "$wrapper_path")" != "$wrapper_target" ]]; then
+    printf 'NDK wrapper has an unexpected target: %s\n' "$wrapper_path" >&2
+    exit 1
+  fi
+done
+path_entries=()
+IFS=: read -r -a path_entries <<< "${PATH:-}" || true
+sanitized_path=""
+for path_entry in "${path_entries[@]}"; do
+  [[ -n "$path_entry" && "$path_entry" != "." && "$path_entry" != "$NDK_WRAPPER_DIR" && "$path_entry" != "$NDK_BIN" ]] || continue
+  sanitized_path="${sanitized_path:+$sanitized_path:}$path_entry"
+done
+export PATH="$NDK_WRAPPER_DIR:$NDK_BIN${sanitized_path:+:$sanitized_path}"
 if [[ $CHECK_NDK_VERSION_ONLY -eq 1 ]]; then
+  resolved_wrapper_cc=$(command -v "${WRAPPER_PREFIX}-gcc" || true)
+  resolved_wrapper_cxx=$(command -v "${WRAPPER_PREFIX}-g++" || true)
+  if [[ "$resolved_wrapper_cc" != "$NDK_WRAPPER_CC" || "$resolved_wrapper_cxx" != "$NDK_WRAPPER_CXX" ]]; then
+    printf 'NDK wrappers were not resolved from %s\n' "$NDK_WRAPPER_DIR" >&2
+    exit 1
+  fi
+  if [[ "$(readlink "$resolved_wrapper_cc")" != "$NDK_TARGET_CLANG" || "$(readlink "$resolved_wrapper_cxx")" != "$NDK_TARGET_CLANGXX" ]]; then
+    printf 'NDK wrapper targets are invalid\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$resolved_wrapper_cc"
+  printf '%s\n' "$resolved_wrapper_cxx"
+  printf '%s\n' "$NDK_TARGET_CLANG"
+  printf '%s\n' "$NDK_TARGET_CLANGXX"
   exit 0
 fi
 for tool in curl sha256sum tar make patchelf readelf strings nproc; do
